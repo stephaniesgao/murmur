@@ -1,0 +1,189 @@
+import Foundation
+class XCTestCase {}
+var failureCount = 0
+func XCTFail(_ message: String = "Failure", file: StaticString = #filePath, line: UInt = #line) { failureCount += 1; print("FAIL \(file):\(line): \(message)") }
+func XCTAssertTrue(_ value: @autoclosure () -> Bool, file: StaticString = #filePath, line: UInt = #line) { if !value() { XCTFail("Expected true", file: file, line: line) } }
+func XCTAssertFalse(_ value: @autoclosure () -> Bool, file: StaticString = #filePath, line: UInt = #line) { if value() { XCTFail("Expected false", file: file, line: line) } }
+func XCTAssertEqual<T: Equatable>(_ a: @autoclosure () -> T, _ b: @autoclosure () -> T, file: StaticString = #filePath, line: UInt = #line) { let av = a(), bv = b(); if av != bv { XCTFail("\(av) != \(bv)", file: file, line: line) } }
+func XCTAssertNil<T>(_ value: T?, file: StaticString = #filePath, line: UInt = #line) { if value != nil { XCTFail("Expected nil", file: file, line: line) } }
+func XCTAssertNotNil<T>(_ value: T?, file: StaticString = #filePath, line: UInt = #line) { if value == nil { XCTFail("Expected non-nil", file: file, line: line) } }
+func XCTUnwrap<T>(_ value: T?) throws -> T { guard let value else { throw NSError(domain: "Check", code: 1) }; return value }
+import Foundation
+import MurmurCore
+
+final class ShortcutTests: XCTestCase {
+    func testHold() { var s = ShortcutGesture(); XCTAssertEqual(s.down(at: 0), [.start]); XCTAssertEqual(s.up(at: 1), [.stop]) }
+    func testSingleTapIsDiscarded() { var s = ShortcutGesture(); _ = s.down(at: 0); XCTAssertEqual(s.up(at: 0.1), [.scheduleStop]); XCTAssertEqual(s.expireTap(), [.cancel]); XCTAssertEqual(s.expireTap(), []) }
+    func testQuickTripleTapCancels() { var s = ShortcutGesture(); _ = s.down(at: 0); _ = s.up(at: 0.1); XCTAssertEqual(s.down(at: 0.25), [.cancelScheduledStop]); _ = s.up(at: 0.3); XCTAssertEqual(s.down(at: 0.5), [.cancel]) }
+    func testFnSpaceLocksHandsFree() { var s = ShortcutGesture(); XCTAssertEqual(s.down(at: 0), [.start]); XCTAssertEqual(s.lockHandsFree(at: 0.4), [.cancelScheduledStop]); XCTAssertEqual(s.up(at: 0.6), []); XCTAssertEqual(s.down(at: 3), [.stop]); XCTAssertEqual(s.up(at: 3.1), []); XCTAssertFalse(s.handsFree) }
+    func testFnSpaceIgnoredWhenNotHolding() { var s = ShortcutGesture(); XCTAssertEqual(s.lockHandsFree(at: 0), []) }
+    func testDoubleTapHandsFree() { var s = ShortcutGesture(); _ = s.down(at: 0); _ = s.up(at: 0.1); XCTAssertEqual(s.down(at: 0.25), [.cancelScheduledStop]); XCTAssertTrue(s.handsFree); XCTAssertEqual(s.up(at: 0.3), []); XCTAssertEqual(s.expireTap(), []); XCTAssertEqual(s.down(at: 1), [.stop]); XCTAssertEqual(s.up(at: 1.1), []); XCTAssertFalse(s.handsFree) }
+    func testAutoRepeatIgnored() { var s = ShortcutGesture(); _ = s.down(at: 0); XCTAssertEqual(s.down(at: 0.1), []); XCTAssertEqual(s.up(at: 1), [.stop]); XCTAssertEqual(s.up(at: 2), []) }
+    func testResetDuringHold() { var s = ShortcutGesture(); _ = s.down(at: 0); s.reset(); XCTAssertEqual(s.up(at: 1), []); XCTAssertEqual(s.down(at: 2), [.start]) }
+    func testResetPendingTap() { var s = ShortcutGesture(); _ = s.down(at: 0); _ = s.up(at: 0.1); s.reset(); XCTAssertEqual(s.expireTap(), []) }
+}
+final class StateTests: XCTestCase {
+    func testFullLifecycle() throws { var s = SessionGate(); let token = try XCTUnwrap(s.begin()); XCTAssertTrue(s.transition(.recording, token: token)); XCTAssertTrue(s.transition(.processing, token: token)); XCTAssertTrue(s.transition(.success, token: token)); XCTAssertNotNil(s.begin()) }
+    func testDuplicateStartRejected() { var s = SessionGate(); _ = s.begin(); XCTAssertNil(s.begin()) }
+    func testDuplicateCompletionRejected() throws { var s = SessionGate(); let token = try XCTUnwrap(s.begin()); _ = s.transition(.recording, token: token); _ = s.transition(.processing, token: token); XCTAssertTrue(s.transition(.success, token: token)); XCTAssertFalse(s.transition(.success, token: token)) }
+    func testCancelInvalidatesResponses() throws { var s = SessionGate(); let token = try XCTUnwrap(s.begin()); s.cancel(); XCTAssertFalse(s.transition(.recording, token: token)); XCTAssertEqual(s.phase, .idle) }
+    func testOldResponseCannotAffectNextRecording() throws { var s = SessionGate(); let old = try XCTUnwrap(s.begin()); s.cancel(); let new = try XCTUnwrap(s.begin()); XCTAssertFalse(s.transition(.error, token: old)); XCTAssertTrue(s.transition(.recording, token: new)) }
+    func testCannotSkipRecording() throws { var s = SessionGate(); let token = try XCTUnwrap(s.begin()); XCTAssertFalse(s.transition(.success, token: token)); XCTAssertFalse(s.transition(.processing, token: token)) }
+    func testErrorCanRestart() throws { var s = SessionGate(); let token = try XCTUnwrap(s.begin()); XCTAssertTrue(s.transition(.error, token: token)); XCTAssertNotNil(s.begin()) }
+}
+final class InsertionPolicyTests: XCTestCase {
+    func testSameTarget() { XCTAssertTrue(InsertionPolicy.mayInsert(originalPID: 1, currentPID: 1, sameField: true, originalSelection: NSRange(location: 5, length: 0), currentSelection: NSRange(location: 5, length: 0))) }
+    func testAppSwitchRejected() { XCTAssertFalse(InsertionPolicy.mayInsert(originalPID: 1, currentPID: 2, sameField: true, originalSelection: nil, currentSelection: nil)) }
+    func testDifferentFieldRejected() { XCTAssertFalse(InsertionPolicy.mayInsert(originalPID: 1, currentPID: 1, sameField: false, originalSelection: nil, currentSelection: nil)) }
+    func testMovedCursorRejected() { XCTAssertFalse(InsertionPolicy.mayInsert(originalPID: 1, currentPID: 1, sameField: true, originalSelection: NSRange(location: 5, length: 0), currentSelection: NSRange(location: 6, length: 0))) }
+    func testLostRangeRejected() { XCTAssertFalse(InsertionPolicy.mayInsert(originalPID: 1, currentPID: 1, sameField: true, originalSelection: NSRange(location: 5, length: 0), currentSelection: nil)) }
+    func testConcurrentClipboardChangeNotOverwritten() { XCTAssertFalse(InsertionPolicy.mayRestoreClipboard(ownedChange: 12, currentChange: 13)); XCTAssertTrue(InsertionPolicy.mayRestoreClipboard(ownedChange: 12, currentChange: 12)) }
+}
+final class LocalCleanupTests: XCTestCase {
+    func edit(_ text: String, _ mode: CleanupMode = .balanced, context: AppContext = .general) -> String { LocalCleanup.edit(.init(transcript: text, mode: mode, context: context, dictionary: [])) }
+    func testVerbatimUntouched() { XCTAssertEqual(edit("  um hello hello  ", .verbatim), "  um hello hello  ") }
+    func testMinimalKeepsFillers() { XCTAssertEqual(edit("um hello", .minimal), "Um hello.") }
+    func testBalancedRemovesSimpleFillers() { XCTAssertEqual(edit("um hello uh world"), "Hello world.") }
+    func testWeekdayCorrection() { XCTAssertEqual(edit("Let's meet Tuesday, actually Thursday"), "Let's meet Thursday.") }
+    func testMonthCorrection() { XCTAssertEqual(edit("in January, sorry February"), "In February.") }
+    func testDoesNotInferComplexCorrections() { XCTAssertEqual(edit("React and Python actually let's use TypeScript"), "React and Python actually let's use TypeScript.") }
+    func testPreservesMeaningfulLike() { XCTAssertEqual(edit("I like this"), "I like this.") }
+    func testPreservesRepetition() { XCTAssertEqual(edit("very very good"), "Very very good.") }
+    func testPreservesNumbersAndAcronyms() { XCTAssertEqual(edit("Use GPU 42 and HTTP"), "Use GPU 42 and HTTP.") }
+    func testExistingPunctuation() { XCTAssertEqual(edit("Ready?"), "Ready?") }
+    func testExplicitParagraphCommand() { XCTAssertEqual(edit("Hello insert new paragraph next"), "Hello\n\nNext.") }
+    func edit(_ text: String, style: WritingStyle, snippets: [Snippet] = []) -> String { LocalCleanup.edit(.init(transcript: text, mode: .balanced, context: .general, dictionary: [], style: style, snippets: snippets)) }
+    func testSpokenPunctuation() { XCTAssertEqual(edit("hello comma how are you question mark"), "Hello, how are you?") }
+    func testSpokenPunctuationWithWhisperMarks() { XCTAssertEqual(edit("Hello comma, how are you question mark?"), "Hello, how are you?") }
+    func testSpokenPeriodAndNewLine() { XCTAssertEqual(edit("first line period new line second line"), "First line.\nSecond line.") }
+    func testSpokenEmDash() { XCTAssertEqual(edit("it was great em dash really great"), "It was great—really great.") }
+    func testDiscussingPunctuationStaysWords() { XCTAssertEqual(edit("remove the comma please"), "Remove the comma please.") }
+    func testNumberedListFromWords() { XCTAssertEqual(edit("Groceries one, milk. Two, eggs. Three, bread."), "Groceries:\n1. Milk\n2. Eggs\n3. Bread") }
+    func testNumberedListFromOrdinals() { XCTAssertEqual(edit("first, book the venue. second, send invites"), "1. Book the venue\n2. Send invites") }
+    func testNumbersInProseAreNotAList() { XCTAssertEqual(edit("I have one dog and two cats"), "I have one dog and two cats.") }
+    func testTimeBacktrack() { XCTAssertEqual(edit("Let's do coffee at 2 actually 3"), "Let's do coffee at 3.") }
+    func testIMeanBacktrack() { XCTAssertEqual(edit("see you Friday I mean Saturday"), "See you Saturday.") }
+    func testScratchThat() { XCTAssertEqual(edit("Send the report today. Call Sam scratch that. Thanks"), "Send the report today. Thanks.") }
+    func testActuallyInProseKept() { XCTAssertEqual(edit("I actually enjoyed the movie"), "I actually enjoyed the movie.") }
+    func testCasualDropsTrailingPeriod() { XCTAssertEqual(edit("sounds good to me", style: .casual), "Sounds good to me") }
+    func testVeryCasualLowercases() { XCTAssertEqual(edit("Sounds good. See you soon", style: .veryCasual), "sounds good. see you soon") }
+    func testVeryCasualKeepsI() { XCTAssertEqual(edit("I'm in", style: .veryCasual), "I'm in") }
+    func testWholeSnippet() { XCTAssertEqual(edit("My calendar link.", style: .formal, snippets: [Snippet(cue: "my calendar link", text: "https://cal.com/me")]), "https://cal.com/me") }
+    func testInlineSnippetIsProtected() { XCTAssertEqual(edit("book a time here my calendar link thanks", style: .formal, snippets: [Snippet(cue: "my calendar link", text: "https://cal.com/me")]), "Book a time here https://cal.com/me thanks.") }
+    func testSpaceAfterPreviousDictation() { XCTAssertEqual(LocalCleanup.joining(after: ".", "Next one."), " Next one."); XCTAssertEqual(LocalCleanup.joining(after: "d", "and more"), " and more") }
+    func testNoSpaceAtStartOrAfterSpace() { XCTAssertEqual(LocalCleanup.joining(after: nil, "Hi."), "Hi."); XCTAssertEqual(LocalCleanup.joining(after: " ", "Hi."), "Hi."); XCTAssertEqual(LocalCleanup.joining(after: "\n", "Hi."), "Hi.") }
+    func testNoSpaceBeforePunctuationOrAfterOpeners() { XCTAssertEqual(LocalCleanup.joining(after: "d", ", right?"), ", right?"); XCTAssertEqual(LocalCleanup.joining(after: "(", "aside"), "aside"); XCTAssertEqual(LocalCleanup.joining(after: "@", "steph"), "steph") }
+    func names(_ text: String, _ entries: [DictionaryEntry]) -> String { LocalCleanup.edit(.init(transcript: text, mode: .balanced, context: .general, dictionary: entries)) }
+    func testSoundsLikeReplaced() { XCTAssertEqual(names("I met shiv on today", [DictionaryEntry(spelling: "Siobhan", soundsLike: "shiv on")]), "I met Siobhan today.") }
+    func testNearMissNameCorrected() { XCTAssertEqual(names("Thanks Stef", [DictionaryEntry(spelling: "Steph")]), "Thanks Steph."); XCTAssertEqual(names("Call Katharine tomorrow", [DictionaryEntry(spelling: "Katherine")]), "Call Katherine tomorrow.") }
+    func testOrdinaryWordsNotChangedToNames() { XCTAssertEqual(names("the step is easy", [DictionaryEntry(spelling: "Steph")]), "The step is easy."); XCTAssertEqual(names("Mark it done", [DictionaryEntry(spelling: "Murmur")]), "Mark it done.") }
+    func testPressEnter() { let r = LocalCleanup.extractPressEnter("Sounds good, press enter."); XCTAssertEqual(r.text, "Sounds good"); XCTAssertTrue(r.pressEnter); XCTAssertFalse(LocalCleanup.extractPressEnter("press enter to continue").pressEnter) }
+    func testStyleCategories() { XCTAssertEqual(StyleCategory.detect(bundle: "com.tinyspeck.slackmacgap"), .work); XCTAssertEqual(StyleCategory.detect(bundle: "com.apple.MobileSMS"), .personal); XCTAssertEqual(StyleCategory.detect(bundle: "com.apple.mail"), .email); XCTAssertNil(StyleCategory.detect(bundle: "com.google.Chrome")); XCTAssertEqual(StyleCategory.detect(bundle: "com.apple.Notes"), .other) }
+    func testOldSettingsGetNewDefaults() throws { let decoded = try JSONDecoder().decode(DictationSettings.self, from: Data(#"{"mode":"minimal"}"#.utf8)); XCTAssertEqual(decoded.mode, .minimal); XCTAssertEqual(decoded.personalStyle, .casual); XCTAssertTrue(decoded.snippets.isEmpty); XCTAssertFalse(decoded.muteWhileDictating) }
+    func testLiteralParagraphWords() { XCTAssertEqual(edit("a new paragraph is useful"), "A new paragraph is useful.") }
+    func testLiteralPunctuationWords() { XCTAssertEqual(edit("a period of time"), "A period of time.") }
+    func testCodePreservesCase() { XCTAssertEqual(edit("myVariable", context: .code), "myVariable") }
+    func testChinesePreserved() { XCTAssertEqual(edit("你好世界。"), "你好世界。") }
+    func testSpanishPreserved() { XCTAssertEqual(edit("¿Cómo estás?"), "¿Cómo estás?") }
+    func testDoesNotRemovePartialWords() { XCTAssertEqual(edit("umbrella and UHF"), "Umbrella and UHF.") }
+    func testEmptyInput() { XCTAssertEqual(edit(""), "") }
+    func testLegacyPolishedUsesSameRules() { XCTAssertEqual(edit("um hello", .polished), edit("um hello", .balanced)) }
+    func testNoCloudSettings() throws {
+        let original = DictationSettings(); let data = try JSONEncoder().encode(original)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        XCTAssertNil(json["transcriptionModel"]); XCTAssertNil(json["cleanupModel"])
+        let decoded = try JSONDecoder().decode(DictationSettings.self, from: data); XCTAssertEqual(decoded, original)
+    }
+    func testReadsPreviousSettings() throws {
+        let data = try JSONEncoder().encode(DictationSettings()); var json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        json["transcriptionModel"] = "old-cloud-model"; json["cleanupModel"] = "old-cleanup"
+        let decoded = try JSONDecoder().decode(DictationSettings.self, from: JSONSerialization.data(withJSONObject: json)); XCTAssertEqual(decoded.mode, .balanced)
+    }
+    func testPrivacyDefaults() { XCTAssertFalse(DictationSettings().keepHistory) }
+    func testBrowserDoesNotReadTabs() { XCTAssertEqual(AppContext.detect(bundle: "com.google.Chrome"), .general) }
+    func testCodeCategory() { XCTAssertEqual(AppContext.detect(bundle: "com.microsoft.VSCode"), .code) }
+    func testAsyncLocalCleanup() async throws {
+        let result = try await LocalCleanup().clean(.init(transcript: "um hello", mode: .balanced, context: .general, dictionary: []), model: "ignored")
+        XCTAssertEqual(result, "Hello.")
+    }
+}
+
+@main struct CheckRunner {
+    static func main() async throws {
+        print("Check: ShortcutTests.testHold"); ShortcutTests().testHold()
+        print("Check: ShortcutTests.testSingleTapIsDiscarded"); ShortcutTests().testSingleTapIsDiscarded()
+        print("Check: ShortcutTests.testQuickTripleTapCancels"); ShortcutTests().testQuickTripleTapCancels()
+        print("Check: ShortcutTests.testFnSpaceLocksHandsFree"); ShortcutTests().testFnSpaceLocksHandsFree()
+        print("Check: ShortcutTests.testFnSpaceIgnoredWhenNotHolding"); ShortcutTests().testFnSpaceIgnoredWhenNotHolding()
+        print("Check: ShortcutTests.testDoubleTapHandsFree"); ShortcutTests().testDoubleTapHandsFree()
+        print("Check: ShortcutTests.testAutoRepeatIgnored"); ShortcutTests().testAutoRepeatIgnored()
+        print("Check: ShortcutTests.testResetDuringHold"); ShortcutTests().testResetDuringHold()
+        print("Check: ShortcutTests.testResetPendingTap"); ShortcutTests().testResetPendingTap()
+        print("Check: StateTests.testFullLifecycle"); try StateTests().testFullLifecycle()
+        print("Check: StateTests.testDuplicateStartRejected"); StateTests().testDuplicateStartRejected()
+        print("Check: StateTests.testDuplicateCompletionRejected"); try StateTests().testDuplicateCompletionRejected()
+        print("Check: StateTests.testCancelInvalidatesResponses"); try StateTests().testCancelInvalidatesResponses()
+        print("Check: StateTests.testOldResponseCannotAffectNextRecording"); try StateTests().testOldResponseCannotAffectNextRecording()
+        print("Check: StateTests.testCannotSkipRecording"); try StateTests().testCannotSkipRecording()
+        print("Check: StateTests.testErrorCanRestart"); try StateTests().testErrorCanRestart()
+        print("Check: InsertionPolicyTests.testSameTarget"); InsertionPolicyTests().testSameTarget()
+        print("Check: InsertionPolicyTests.testAppSwitchRejected"); InsertionPolicyTests().testAppSwitchRejected()
+        print("Check: InsertionPolicyTests.testDifferentFieldRejected"); InsertionPolicyTests().testDifferentFieldRejected()
+        print("Check: InsertionPolicyTests.testMovedCursorRejected"); InsertionPolicyTests().testMovedCursorRejected()
+        print("Check: InsertionPolicyTests.testLostRangeRejected"); InsertionPolicyTests().testLostRangeRejected()
+        print("Check: InsertionPolicyTests.testConcurrentClipboardChangeNotOverwritten"); InsertionPolicyTests().testConcurrentClipboardChangeNotOverwritten()
+        print("Check: LocalCleanupTests.testVerbatimUntouched"); LocalCleanupTests().testVerbatimUntouched()
+        print("Check: LocalCleanupTests.testMinimalKeepsFillers"); LocalCleanupTests().testMinimalKeepsFillers()
+        print("Check: LocalCleanupTests.testBalancedRemovesSimpleFillers"); LocalCleanupTests().testBalancedRemovesSimpleFillers()
+        print("Check: LocalCleanupTests.testWeekdayCorrection"); LocalCleanupTests().testWeekdayCorrection()
+        print("Check: LocalCleanupTests.testMonthCorrection"); LocalCleanupTests().testMonthCorrection()
+        print("Check: LocalCleanupTests.testDoesNotInferComplexCorrections"); LocalCleanupTests().testDoesNotInferComplexCorrections()
+        print("Check: LocalCleanupTests.testPreservesMeaningfulLike"); LocalCleanupTests().testPreservesMeaningfulLike()
+        print("Check: LocalCleanupTests.testPreservesRepetition"); LocalCleanupTests().testPreservesRepetition()
+        print("Check: LocalCleanupTests.testPreservesNumbersAndAcronyms"); LocalCleanupTests().testPreservesNumbersAndAcronyms()
+        print("Check: LocalCleanupTests.testExistingPunctuation"); LocalCleanupTests().testExistingPunctuation()
+        print("Check: LocalCleanupTests.testExplicitParagraphCommand"); LocalCleanupTests().testExplicitParagraphCommand()
+        print("Check: LocalCleanupTests.testSpokenPunctuation"); LocalCleanupTests().testSpokenPunctuation()
+        print("Check: LocalCleanupTests.testSpokenPunctuationWithWhisperMarks"); LocalCleanupTests().testSpokenPunctuationWithWhisperMarks()
+        print("Check: LocalCleanupTests.testSpokenPeriodAndNewLine"); LocalCleanupTests().testSpokenPeriodAndNewLine()
+        print("Check: LocalCleanupTests.testSpokenEmDash"); LocalCleanupTests().testSpokenEmDash()
+        print("Check: LocalCleanupTests.testDiscussingPunctuationStaysWords"); LocalCleanupTests().testDiscussingPunctuationStaysWords()
+        print("Check: LocalCleanupTests.testNumberedListFromWords"); LocalCleanupTests().testNumberedListFromWords()
+        print("Check: LocalCleanupTests.testNumberedListFromOrdinals"); LocalCleanupTests().testNumberedListFromOrdinals()
+        print("Check: LocalCleanupTests.testNumbersInProseAreNotAList"); LocalCleanupTests().testNumbersInProseAreNotAList()
+        print("Check: LocalCleanupTests.testTimeBacktrack"); LocalCleanupTests().testTimeBacktrack()
+        print("Check: LocalCleanupTests.testIMeanBacktrack"); LocalCleanupTests().testIMeanBacktrack()
+        print("Check: LocalCleanupTests.testScratchThat"); LocalCleanupTests().testScratchThat()
+        print("Check: LocalCleanupTests.testActuallyInProseKept"); LocalCleanupTests().testActuallyInProseKept()
+        print("Check: LocalCleanupTests.testCasualDropsTrailingPeriod"); LocalCleanupTests().testCasualDropsTrailingPeriod()
+        print("Check: LocalCleanupTests.testVeryCasualLowercases"); LocalCleanupTests().testVeryCasualLowercases()
+        print("Check: LocalCleanupTests.testVeryCasualKeepsI"); LocalCleanupTests().testVeryCasualKeepsI()
+        print("Check: LocalCleanupTests.testWholeSnippet"); LocalCleanupTests().testWholeSnippet()
+        print("Check: LocalCleanupTests.testInlineSnippetIsProtected"); LocalCleanupTests().testInlineSnippetIsProtected()
+        print("Check: LocalCleanupTests.testSpaceAfterPreviousDictation"); LocalCleanupTests().testSpaceAfterPreviousDictation()
+        print("Check: LocalCleanupTests.testNoSpaceAtStartOrAfterSpace"); LocalCleanupTests().testNoSpaceAtStartOrAfterSpace()
+        print("Check: LocalCleanupTests.testNoSpaceBeforePunctuationOrAfterOpeners"); LocalCleanupTests().testNoSpaceBeforePunctuationOrAfterOpeners()
+        print("Check: LocalCleanupTests.testSoundsLikeReplaced"); LocalCleanupTests().testSoundsLikeReplaced()
+        print("Check: LocalCleanupTests.testNearMissNameCorrected"); LocalCleanupTests().testNearMissNameCorrected()
+        print("Check: LocalCleanupTests.testOrdinaryWordsNotChangedToNames"); LocalCleanupTests().testOrdinaryWordsNotChangedToNames()
+        print("Check: LocalCleanupTests.testPressEnter"); LocalCleanupTests().testPressEnter()
+        print("Check: LocalCleanupTests.testStyleCategories"); LocalCleanupTests().testStyleCategories()
+        print("Check: LocalCleanupTests.testOldSettingsGetNewDefaults"); try LocalCleanupTests().testOldSettingsGetNewDefaults()
+        print("Check: LocalCleanupTests.testLiteralParagraphWords"); LocalCleanupTests().testLiteralParagraphWords()
+        print("Check: LocalCleanupTests.testLiteralPunctuationWords"); LocalCleanupTests().testLiteralPunctuationWords()
+        print("Check: LocalCleanupTests.testCodePreservesCase"); LocalCleanupTests().testCodePreservesCase()
+        print("Check: LocalCleanupTests.testChinesePreserved"); LocalCleanupTests().testChinesePreserved()
+        print("Check: LocalCleanupTests.testSpanishPreserved"); LocalCleanupTests().testSpanishPreserved()
+        print("Check: LocalCleanupTests.testDoesNotRemovePartialWords"); LocalCleanupTests().testDoesNotRemovePartialWords()
+        print("Check: LocalCleanupTests.testEmptyInput"); LocalCleanupTests().testEmptyInput()
+        print("Check: LocalCleanupTests.testLegacyPolishedUsesSameRules"); LocalCleanupTests().testLegacyPolishedUsesSameRules()
+        print("Check: LocalCleanupTests.testNoCloudSettings"); try LocalCleanupTests().testNoCloudSettings()
+        print("Check: LocalCleanupTests.testReadsPreviousSettings"); try LocalCleanupTests().testReadsPreviousSettings()
+        print("Check: LocalCleanupTests.testPrivacyDefaults"); LocalCleanupTests().testPrivacyDefaults()
+        print("Check: LocalCleanupTests.testBrowserDoesNotReadTabs"); LocalCleanupTests().testBrowserDoesNotReadTabs()
+        print("Check: LocalCleanupTests.testCodeCategory"); LocalCleanupTests().testCodeCategory()
+        print("Check: LocalCleanupTests.testAsyncLocalCleanup"); try await LocalCleanupTests().testAsyncLocalCleanup()
+ print("73 checks, \(failureCount) failures")
+ if failureCount > 0 { exit(1) }
+ }
+}
