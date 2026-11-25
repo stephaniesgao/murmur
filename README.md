@@ -2,6 +2,10 @@
 
 Native macOS menu-bar dictation using a local Whisper model (via the open-source WhisperKit library) and conservative local text cleanup. No account, API key, paid API or cloud transcription. Version 0.3.0 replaces Apple speech recognition, so Dictation and Siri do not need to be turned on.
 
+<p align="center"><img src="docs/demo.gif" alt="Holding fn in a chat app: Murmur's waveform pill listens, then inserts “Yeah, let's do Wednesday at three.” and sends it" width="800"></p>
+
+▶️ **[Watch the full launch video with sound](docs/murmur-launch.mp4)** (42 s)
+
 ## Install
 
 1. Quit older Murmur copies from their menu-bar Quit command.
