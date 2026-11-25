@@ -98,3 +98,7 @@ The dependency-free checks exercise local cleanup behavior, settings migration, 
 `MurmurCore` contains settings, provider protocols, local cleanup, shortcut/session state machines and insertion policies. `Murmur` contains the Whisper speech model manager, selected-microphone recording, keyboard monitor, target insertion, menu-bar lifecycle, SwiftUI settings and nonactivating waveform overlay. Recognition has cancellation, once-only continuation completion and a 60-second processing timeout. Failed recognition is never replaced by guessed or example text.
 
 Apple references: [on-device support](https://developer.apple.com/documentation/speech/sfspeechrecognizer/supportsondevicerecognition), [requiring local recognition](https://developer.apple.com/documentation/speech/sfspeechrecognitionrequest/requiresondevicerecognition), [speech authorization](https://developer.apple.com/documentation/speech/asking-permission-to-use-speech-recognition).
+
+## License
+
+MIT. See [LICENSE](LICENSE). Murmur uses [WhisperKit](https://github.com/argmaxinc/WhisperKit) (MIT) and OpenAI Whisper models (MIT), downloaded separately at first run.
