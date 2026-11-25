@@ -4,7 +4,7 @@ Native macOS menu-bar dictation using a local Whisper model (via the open-source
 
 <p align="center"><img src="docs/demo.gif" alt="Holding fn in a chat app: Murmur's waveform pill listens, then inserts “Yeah, let's do Wednesday at three.” and sends it" width="800"></p>
 
-▶️ **[Watch the full launch video with sound](docs/murmur-launch.mp4)** (42 s)
+▶️ **[Watch the full launch video with sound](https://github.com/stephaniesgao/murmur/raw/main/docs/murmur-launch.mp4)** (42 s)
 
 ## Install
 
