@@ -1,7 +1,7 @@
 import Foundation
 
 /// Rule-based, on-device text cleanup. Everything here is deterministic and local; there is no
-/// AI rewriting. Rules aim to match what people expect from dictation apps such as Wispr Flow:
+/// AI rewriting. Rules aim to match what people expect from a dictation app:
 /// spoken punctuation, lists, backtracking, snippets and per-app writing styles.
 public struct LocalCleanup: CleanupProvider {
     public init() {}

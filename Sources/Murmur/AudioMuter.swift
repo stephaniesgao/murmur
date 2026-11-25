@@ -1,7 +1,7 @@
 import CoreAudio
 import AudioToolbox
 
-/// Mutes the current output device while dictating (optional, like Wispr's “Mute audio while
+/// Mutes the current output device while dictating (optional, “Mute audio while
 /// dictating”) and puts it back exactly as it was afterwards.
 final class AudioMuter {
     private var device: AudioDeviceID?

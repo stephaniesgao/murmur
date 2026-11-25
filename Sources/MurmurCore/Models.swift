@@ -19,7 +19,7 @@ public struct HistoryEntry: Codable, Identifiable, Sendable {
     public var id: UUID; public var date: Date; public var text: String
     public init(text: String) { id = UUID(); date = Date(); self.text = text }
 }
-/// How casual dictated text should read, per kind of app (like Wispr Flow's Styles).
+/// How casual dictated text should read, per kind of app.
 public enum WritingStyle: String, CaseIterable, Codable, Sendable {
     case formal, casual, veryCasual
     public var label: String { switch self { case .formal: return "Formal"; case .casual: return "Casual"; case .veryCasual: return "Very casual" } }
@@ -127,7 +127,7 @@ public struct ShortcutGesture {
         if time - downTime < 0.22 { pendingTap = time; return [.scheduleStop] }
         return [.stop]
     }
-    /// A quick tap that wasn't followed by a second one is discarded, like Wispr: hold to talk.
+    /// A quick tap that wasn't followed by a second one is discarded: hold to talk.
     public mutating func expireTap() -> [ShortcutAction] { guard pendingTap != nil, !handsFree else { return [] }; pendingTap = nil; return [.cancel] }
     /// Fn+Space while holding Fn: keep recording after release (hands-free).
     public var canLockHandsFree: Bool { isDown && !handsFree && !suppressedUntilRelease }

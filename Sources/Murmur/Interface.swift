@@ -382,7 +382,7 @@ struct RecordingCapsule: View {
         .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 1))
         .shadow(color: Color.black.opacity(0.2), radius: 5, y: 2)
         .contentShape(Capsule())
-        // Like Wispr's bar: clicking the pill while recording stops and inserts.
+        // Clicking the pill while recording stops and inserts.
         .onTapGesture { if controller.phase == .recording { controller.finish() } }
         .help(controller.phase == .recording ? "Click to stop and insert" : "")
         .padding(12)
