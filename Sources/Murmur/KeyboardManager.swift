@@ -11,6 +11,7 @@ private let keyLog = Logger(subsystem: "com.steph.murmur", category: "shortcut")
     var onAction: ((ShortcutAction) -> Void)?
     var onAvailability: ((Bool) -> Void)?
     var onPasteLast: (() -> Void)?
+    var allowsDictationGestures: (() -> Bool)?
     /// Key-ups to swallow because Murmur used the matching key-down (Fn+Space, ⌃⌘V).
     private var swallowKeyUps: Set<UInt16> = []
     var settings: DictationSettings = .init()
@@ -76,6 +77,7 @@ private let keyLog = Logger(subsystem: "com.steph.murmur", category: "shortcut")
             if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 { keyLog.notice("Paste last transcript"); onPasteLast?() }
             swallowKeyUps.insert(key); return true
         }
+        guard allowsDictationGestures?() != false else { return false }
         if settings.shortcut == "fn", type == .flagsChanged {
             let down = event.flags.contains(.maskSecondaryFn)
             if down != fnDown { fnDown = down

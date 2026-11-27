@@ -66,6 +66,7 @@ struct UsageStats: Equatable {
             switch action { case .start: self.start(); case .stop: self.finish(); case .cancel: self.cancel(); case .cancelScheduledStop: self.handsFree = true; default: break }
         }
         keyboard.onPasteLast = { [weak self] in self?.pasteLast() }
+        keyboard.allowsDictationGestures = { [weak self] in self?.isCapturingNote != true }
         keyboard.onAvailability = { [weak self] in self?.keyboardAvailable = $0 }
         audio.onLevel = { [weak self] value in Task { @MainActor in self?.level = value } }
         audio.onFailure = { [weak self] text in Task { @MainActor in self?.fail(text) } }
@@ -82,6 +83,7 @@ struct UsageStats: Equatable {
     }
     var busy: Bool { [.preparing, .recording, .processing].contains(phase) }
     var isNoteSession: Bool { if case .note = destination { return true }; return false }
+    private var isCapturingNote: Bool { isNoteSession && busy }
     var canPasteLast: Bool { !lastTranscript.isEmpty }
     func toggle() { if phase == .recording && !isNoteSession { finish() } else if !busy { handsFree = true; start() } }
     func toggleNote() { if phase == .recording && isNoteSession { finish() } else if !busy { handsFree = true; start(capturingNote: true) } }
@@ -91,7 +93,10 @@ struct UsageStats: Equatable {
         guard let token = gate.begin() else { dictationLog.notice("Start ignored: still \(self.phase.rawValue, privacy: .public)"); return }
         dismiss?.cancel(); stopWhenReady = false; result = ""; message = ""; level = 0
         destination = nil
-        if capturingNote { destination = .note }
+        if capturingNote {
+            destination = .note
+            keyboard.reset()
+        }
         else {
             do { destination = .insertion(try TextInsertion.capture()) } catch { fail(error.localizedDescription); return }
         }
