@@ -12,6 +12,7 @@ private let launchLog = Logger(subsystem: "com.steph.murmur", category: "launch"
     private var store: Store!
     private var overlay: Overlay!
     private var settingsWindow: NSWindow?
+    private var notesWindow: NSWindow?
     private static let reopenNotification = Notification.Name("com.steph.murmur.showSettings")
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -34,8 +35,13 @@ private let launchLog = Logger(subsystem: "com.steph.murmur", category: "launch"
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Murmur dictation")
         statusItem.button?.toolTip = "Murmur · voice dictation"
         let menu = NSMenu(); let item = NSMenuItem()
-        item.view = NSHostingView(rootView: MenuView(controller: controller, store: store, openSettings: { [weak self] in menu.cancelTracking(); self?.showSettings() }, closeMenu: { menu.cancelTracking() }))
-        item.view?.frame = NSRect(x: 0, y: 0, width: 310, height: 430); menu.addItem(item); statusItem.menu = menu
+        item.view = NSHostingView(rootView: MenuView(
+            controller: controller, store: store,
+            openSettings: { [weak self] in menu.cancelTracking(); self?.showSettings() },
+            openNotes: { [weak self] in menu.cancelTracking(); self?.showNotes() },
+            closeMenu: { menu.cancelTracking() }
+        ))
+        item.view?.frame = NSRect(x: 0, y: 0, width: 310, height: 470); menu.addItem(item); statusItem.menu = menu
         controller.onStatusChange = { [weak self] in
             guard let self else { return }; self.overlay.update(phase: self.controller.phase)
             self.statusItem.button?.image = NSImage(systemSymbolName: self.controller.phase == .recording ? "mic.fill" : "waveform", accessibilityDescription: "Murmur \(self.controller.phase.rawValue)")
@@ -60,13 +66,29 @@ private let launchLog = Logger(subsystem: "com.steph.murmur", category: "launch"
             window.contentView = NSHostingView(rootView: SettingsView(controller: controller, store: store)); window.center(); settingsWindow = window
         }
         guard let window = settingsWindow else { return }
+        present(window)
+        launchLog.notice("Showed Settings (app active: \(NSApp.isActive, privacy: .public))")
+    }
+    private func showNotes() {
+        if notesWindow == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 500), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            window.title = "Murmur Notes"
+            window.isReleasedWhenClosed = false
+            window.contentMinSize = NSSize(width: 580, height: 380)
+            window.collectionBehavior.formUnion([.moveToActiveSpace, .fullScreenAuxiliary])
+            window.contentView = NSHostingView(rootView: NotesView(controller: controller, store: store))
+            window.center()
+            notesWindow = window
+        }
+        if let window = notesWindow { present(window) }
+    }
+    private func present(_ window: NSWindow) {
         if window.isMiniaturized { window.deminiaturize(nil) }
         if #available(macOS 14.0, *) { NSApp.activate() } else { NSApp.activate(ignoringOtherApps: true) }
         window.makeKeyAndOrderFront(nil)
         // Activation can still be refused for a background menu-bar app; make sure the
         // window is at least in front of other apps' windows so it is never hidden behind them.
         window.orderFrontRegardless()
-        launchLog.notice("Showed Settings (app active: \(NSApp.isActive, privacy: .public))")
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         launchLog.notice("Reopened from Finder or Dock")
