@@ -325,7 +325,7 @@ struct MenuView: View {
                     Spacer(minLength: 4)
                     Button("Update") {
                         closeMenu()
-                        updater.installAvailableUpdate { controller.cancel(); controller.keyboard.stop() }
+                        updater.installAvailableUpdate(isBusy: { controller.busy }) { controller.cancel(); controller.keyboard.stop() }
                     }
                     .buttonStyle(PillButtonStyle(compact: true))
                     .disabled(controller.busy)
@@ -724,7 +724,7 @@ struct SettingsView: View {
                         }
                     case .available:
                         Button("Update & restart") {
-                            updater.installAvailableUpdate { controller.cancel(); controller.keyboard.stop() }
+                            updater.installAvailableUpdate(isBusy: { controller.busy }) { controller.cancel(); controller.keyboard.stop() }
                         }
                         .buttonStyle(PillButtonStyle(compact: true))
                         .disabled(controller.busy)

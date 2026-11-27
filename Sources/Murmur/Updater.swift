@@ -149,15 +149,15 @@ enum UpdateState: Equatable {
         }
     }
 
-    func installAvailableUpdate(beforeTerminate: @escaping () -> Void) {
+    func installAvailableUpdate(isBusy: @escaping () -> Bool, beforeTerminate: @escaping () -> Void) {
         guard case .available(let manifest) = state else { return }
         activeTask?.cancel()
         activeTask = Task { [weak self] in
-            await self?.performInstall(manifest: manifest, beforeTerminate: beforeTerminate)
+            await self?.performInstall(manifest: manifest, isBusy: isBusy, beforeTerminate: beforeTerminate)
         }
     }
 
-    private func performInstall(manifest: UpdateManifest, beforeTerminate: @escaping () -> Void) async {
+    private func performInstall(manifest: UpdateManifest, isBusy: @escaping () -> Bool, beforeTerminate: @escaping () -> Void) async {
         let targetApp = Bundle.main.bundleURL
         guard targetApp.pathExtension == "app" else {
             state = .failed("Updates can only be installed when running from Murmur.app.")
@@ -200,6 +200,12 @@ enum UpdateState: Equatable {
             // Strip any quarantine attribute defensively before verifying and relaunching.
             _ = try? await runProcess("/usr/bin/xattr", arguments: ["-dr", "com.apple.quarantine", stagedApp.path], failureMessage: "")
             try await runProcess("/usr/bin/codesign", arguments: ["--verify", "--deep", "--strict", stagedApp.path], failureMessage: "The downloaded app failed code signature verification.")
+
+            // Wait for any dictation or note capture started during the download to finish before restarting.
+            while isBusy() {
+                try Task.checkCancellation()
+                try await Task.sleep(nanoseconds: 250_000_000)
+            }
 
             let helper = Process()
             helper.executableURL = URL(fileURLWithPath: "/bin/sh")
