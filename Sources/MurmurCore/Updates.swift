@@ -131,6 +131,7 @@ public enum UpdatePolicy {
         stagingRootPath: String
     ) -> [String] {
         let script = """
+        trap '' HUP
         pid="$1"
         staged="$2"
         target="$3"
@@ -142,8 +143,9 @@ public enum UpdatePolicy {
           exit 1
         fi
         if ! /bin/mv "$staged" "$target"; then
-          /bin/mv "$backup" "$target" 2>/dev/null || true
-          /bin/rm -rf "$staging_root"
+          if /bin/mv "$backup" "$target" 2>/dev/null; then
+            /bin/rm -rf "$staging_root"
+          fi
           exit 1
         fi
         /bin/rm -rf "$staging_root"
