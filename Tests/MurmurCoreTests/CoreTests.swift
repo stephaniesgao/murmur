@@ -165,6 +165,65 @@ final class NoteTests: XCTestCase {
     }
 }
 
+final class UpdateTests: XCTestCase {
+    private let validHash = String(repeating: "a", count: 64)
+
+    func testVersionComparison() {
+        let current = AppVersion(shortVersion: "0.4.0", build: 5)
+        XCTAssertTrue(AppVersion(shortVersion: "0.4.0", build: 6).isNewer(than: current))
+        XCTAssertTrue(AppVersion(shortVersion: "0.5.0", build: 1).isNewer(than: current))
+        XCTAssertTrue(AppVersion(shortVersion: "v0.4.1", build: 5).isNewer(than: current))
+        XCTAssertFalse(AppVersion(shortVersion: "0.4.0", build: 5).isNewer(than: current))
+        XCTAssertFalse(AppVersion(shortVersion: "0.4.0", build: 4).isNewer(than: current))
+        XCTAssertFalse(AppVersion(shortVersion: "0.3.9", build: 99).isNewer(than: current))
+    }
+
+    func testManifestDecodingAndValidation() throws {
+        let json = """
+        {
+          "version": "0.4.0",
+          "build": 7,
+          "commit": "abc1234",
+          "downloadURL": "https://github.com/stephaniesgao/murmur/releases/download/v0.4.0-b7/Murmur.zip",
+          "sha256": "\(validHash)",
+          "notes": "Add auto-updates"
+        }
+        """
+        let manifest = try JSONDecoder().decode(UpdateManifest.self, from: Data(json.utf8))
+        try manifest.validate()
+        XCTAssertTrue(UpdatePolicy.isUpdateAvailable(current: AppVersion(shortVersion: "0.4.0", build: 5), manifest: manifest))
+        XCTAssertFalse(UpdatePolicy.isUpdateAvailable(current: AppVersion(shortVersion: "0.4.0", build: 7), manifest: manifest))
+    }
+
+    func testManifestRejectsPlainHTTPAndBadChecksum() {
+        let remoteHTTP = UpdateManifest(version: "0.4.0", build: 7, downloadURL: URL(string: "http://example.com/Murmur.zip")!, sha256: validHash)
+        do { try remoteHTTP.validate(allowLocalHTTP: true); XCTFail("Expected remote HTTP rejection") } catch {}
+
+        let localHTTP = UpdateManifest(version: "0.4.0", build: 7, downloadURL: URL(string: "http://127.0.0.1:8080/Murmur.zip")!, sha256: validHash)
+        do { try localHTTP.validate(allowLocalHTTP: false); XCTFail("Expected local HTTP rejection when disallowed") } catch {}
+        do { try localHTTP.validate(allowLocalHTTP: true) } catch { XCTFail("Expected local HTTP allowed when opted in: \(error)") }
+
+        let badHash = UpdateManifest(version: "0.4.0", build: 7, downloadURL: URL(string: "https://github.com/stephaniesgao/murmur/releases/download/v0.4.0-b7/Murmur.zip")!, sha256: "not-a-sha")
+        do { try badHash.validate(); XCTFail("Expected bad SHA-256 rejection") } catch {}
+    }
+
+    func testInstallHelperArgumentsKeepPathsOutOfScript() {
+        let args = UpdatePolicy.installHelperArguments(pid: 42, stagedAppPath: "/tmp/a b/Murmur.app", targetAppPath: "/Applications/Murmur.app", stagingRootPath: "/tmp/a b")
+        XCTAssertEqual(args.count, 7)
+        XCTAssertEqual(args[0], "-c")
+        XCTAssertFalse(args[1].contains("/Applications/Murmur.app"))
+        XCTAssertEqual(args[3], "42")
+        XCTAssertEqual(args[4], "/tmp/a b/Murmur.app")
+        XCTAssertEqual(args[5], "/Applications/Murmur.app")
+        XCTAssertEqual(args[6], "/tmp/a b")
+    }
+
+    func testAutoCheckUpdatesDefaultsTrueForOldSettings() throws {
+        let decoded = try JSONDecoder().decode(DictationSettings.self, from: Data(#"{"mode":"balanced"}"#.utf8))
+        XCTAssertTrue(decoded.autoCheckUpdates)
+    }
+}
+
 @main struct CheckRunner {
     static func main() async throws {
         print("Check: ShortcutTests.testHold"); ShortcutTests().testHold()
@@ -243,7 +302,12 @@ final class NoteTests: XCTestCase {
         print("Check: NoteTests.testCreateEditDeleteAndReload"); try NoteTests().testCreateEditDeleteAndReload()
         print("Check: NoteTests.testSearchUsesEntireNote"); try NoteTests().testSearchUsesEntireNote()
         print("Check: NoteTests.testCorruptedNotesAreNotOverwritten"); try NoteTests().testCorruptedNotesAreNotOverwritten()
- print("76 checks, \(failureCount) failures")
+        print("Check: UpdateTests.testVersionComparison"); UpdateTests().testVersionComparison()
+        print("Check: UpdateTests.testManifestDecodingAndValidation"); try UpdateTests().testManifestDecodingAndValidation()
+        print("Check: UpdateTests.testManifestRejectsPlainHTTPAndBadChecksum"); UpdateTests().testManifestRejectsPlainHTTPAndBadChecksum()
+        print("Check: UpdateTests.testInstallHelperArgumentsKeepPathsOutOfScript"); UpdateTests().testInstallHelperArgumentsKeepPathsOutOfScript()
+        print("Check: UpdateTests.testAutoCheckUpdatesDefaultsTrueForOldSettings"); try UpdateTests().testAutoCheckUpdatesDefaultsTrueForOldSettings()
+ print("81 checks, \(failureCount) failures")
  if failureCount > 0 { exit(1) }
  }
 }

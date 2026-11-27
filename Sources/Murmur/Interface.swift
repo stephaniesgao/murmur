@@ -283,6 +283,7 @@ func cleanupDescription(_ mode: CleanupMode) -> String {
 struct MenuView: View {
     @ObservedObject var controller: DictationController
     @ObservedObject var store: Store
+    @ObservedObject var updater: UpdateManager
     var openSettings: () -> Void
     var openNotes: () -> Void
     var closeMenu: () -> Void
@@ -314,6 +315,24 @@ struct MenuView: View {
             }
             if !controller.keyboardAvailable {
                 Text("Your shortcut can’t be heard yet. Turn on Input Monitoring in Settings.").font(.system(size: 11.5)).foregroundStyle(Theme.warm).fixedSize(horizontal: false, vertical: true)
+            }
+            if let update = updater.state.availableUpdate {
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Update available").font(Theme.rounded(12, .semibold)).foregroundStyle(Theme.ink)
+                        Text("Version \(update.appVersion.displayString)").font(.system(size: 11)).foregroundStyle(Theme.muted)
+                    }
+                    Spacer(minLength: 4)
+                    Button("Update") {
+                        closeMenu()
+                        updater.installAvailableUpdate { controller.cancel(); controller.keyboard.stop() }
+                    }
+                    .buttonStyle(PillButtonStyle(compact: true))
+                    .disabled(controller.busy)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.chip))
             }
             Button {
                 closeMenu()
@@ -504,6 +523,7 @@ struct SettingsView: View {
     @ObservedObject var controller: DictationController
     @ObservedObject var store: Store
     @ObservedObject var models: SpeechModelManager
+    @ObservedObject var updater: UpdateManager
     @State private var page: SettingsPage = .setup
     @State private var status = ""
     @State private var microphones: [Microphone] = []
@@ -517,10 +537,11 @@ struct SettingsView: View {
     @State private var newHint = ""
     private let refresh = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
-    init(controller: DictationController, store: Store, page: SettingsPage = .setup) {
+    init(controller: DictationController, store: Store, updater: UpdateManager, page: SettingsPage = .setup) {
         _controller = ObservedObject(wrappedValue: controller)
         _store = ObservedObject(wrappedValue: store)
         _models = ObservedObject(wrappedValue: controller.models)
+        _updater = ObservedObject(wrappedValue: updater)
         _page = State(initialValue: page)
     }
 
@@ -593,6 +614,10 @@ struct SettingsView: View {
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.card.opacity(0.7)))
+            Text("Version \(updater.currentVersion.displayString)")
+                .font(.system(size: 10.5))
+                .foregroundStyle(Theme.muted.opacity(0.8))
+                .padding(.horizontal, 8).padding(.top, 6)
         }
         .padding(.horizontal, 14).padding(.top, 46).padding(.bottom, 16)
         .frame(width: 210)
@@ -607,8 +632,8 @@ struct SettingsView: View {
                 Image(systemName: item.icon).font(.system(size: 13, weight: .semibold)).frame(width: 18)
                 Text(item.title).font(Theme.rounded(13.5, selected ? .bold : .medium))
                 Spacer()
-                if item == .setup && !allPermissionsReady {
-                    Circle().fill(Theme.warm).frame(width: 7, height: 7)
+                if item == .setup && (!allPermissionsReady || updater.state.availableUpdate != nil) {
+                    Circle().fill(updater.state.availableUpdate != nil ? Theme.accent : Theme.warm).frame(width: 7, height: 7)
                 }
             }
             .foregroundStyle(selected ? Theme.accent : Theme.ink.opacity(0.75))
@@ -625,6 +650,13 @@ struct SettingsView: View {
     private var allPermissionsReady: Bool { microphone && models.isReady && accessibility && monitoring }
     private var readyCount: Int { [models.isReady, microphone, accessibility, monitoring].filter { $0 }.count }
 
+    private var showUpdateProminent: Bool {
+        switch updater.state {
+        case .available, .downloading, .installing: return true
+        default: return false
+        }
+    }
+
     private var setup: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 6) {
@@ -633,6 +665,7 @@ struct SettingsView: View {
                 }
                 Text(allPermissionsReady ? "All set!" : "\(readyCount) of 4 ready").font(Theme.rounded(12, .semibold)).foregroundStyle(allPermissionsReady ? Theme.mint : Theme.muted).fixedSize().padding(.leading, 6)
             }
+            if showUpdateProminent { updatesCard }
             modelCard
             Card {
                 permissionRow(icon: "mic.fill", title: "Microphone", detail: "So Murmur can hear you.", ok: microphone) {
@@ -664,8 +697,78 @@ struct SettingsView: View {
             .onChange(of: loginEnabled) { enabled in
                 do { if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }; status = "" } catch { status = "Login item: \(error.localizedDescription)"; loginEnabled = SMAppService.mainApp.status == .enabled }
             }
+            if !showUpdateProminent { updatesCard }
             if !status.isEmpty { Note(status) }
-            Note("Speech is recognized by Whisper running on this Mac. Your audio is never uploaded; the only download is the model itself, from Hugging Face. No document text, browser tabs or screenshots are read.")
+            Note("Speech is recognized by Whisper running on this Mac. Your audio is never uploaded. Network access is limited to downloading the speech model from Hugging Face and checking GitHub Releases for app updates (which can be turned off above). No document text, browser tabs or screenshots are read.")
+        }
+    }
+
+    private var updatesCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 10) {
+                SettingRow(icon: "arrow.down.circle", title: "Updates", detail: "Installed: \(updater.currentVersion.displayString)") {
+                    switch updater.state {
+                    case .idle:
+                        Button("Check for updates") { updater.checkForUpdates(userInitiated: true) }
+                            .buttonStyle(PillButtonStyle(prominent: false, compact: true))
+                    case .checking:
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Checking…").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                        }
+                    case .upToDate:
+                        HStack(spacing: 8) {
+                            StatusBadge(ok: true, text: "Up to date")
+                            Button("Check again") { updater.checkForUpdates(userInitiated: true) }
+                                .buttonStyle(PillButtonStyle(prominent: false, compact: true))
+                        }
+                    case .available:
+                        Button("Update & restart") {
+                            updater.installAvailableUpdate { controller.cancel(); controller.keyboard.stop() }
+                        }
+                        .buttonStyle(PillButtonStyle(compact: true))
+                        .disabled(controller.busy)
+                    case .downloading, .installing:
+                        EmptyView()
+                    case .failed:
+                        Button("Try again") { updater.checkForUpdates(userInitiated: true) }
+                            .buttonStyle(PillButtonStyle(prominent: false, compact: true))
+                    }
+                }
+                switch updater.state {
+                case .available(let manifest):
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Murmur \(manifest.appVersion.displayString) is available.")
+                            .font(Theme.rounded(12.5, .semibold))
+                            .foregroundStyle(Theme.accent)
+                        if let notes = manifest.notes, !notes.isEmpty {
+                            Text(notes).font(.system(size: 12)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(.bottom, 4)
+                case .downloading(let fraction):
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Downloading update… \(Int(fraction * 100))%").font(Theme.rounded(12.5, .semibold)).foregroundStyle(Theme.ink)
+                        ProgressView(value: fraction).progressViewStyle(.linear).tint(Theme.accent)
+                    }
+                    .padding(.bottom, 4)
+                case .installing:
+                    HStack(spacing: 10) {
+                        Text("Verifying and installing update… Murmur will restart automatically.").font(Theme.rounded(12.5, .medium)).foregroundStyle(Theme.ink).fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                        ProgressView().controlSize(.small)
+                    }
+                    .padding(.bottom, 4)
+                case .failed(let message):
+                    Text(message).font(.system(size: 12)).foregroundStyle(Theme.warm).fixedSize(horizontal: false, vertical: true).padding(.bottom, 4)
+                default:
+                    EmptyView()
+                }
+                CardDivider()
+                SettingRow(title: "Check for updates automatically", detail: "Checks GitHub Releases for new versions merged to main.") {
+                    Toggle("", isOn: $store.settings.autoCheckUpdates).toggleStyle(.switch).labelsHidden()
+                }
+            }
         }
     }
 
