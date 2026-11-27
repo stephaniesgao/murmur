@@ -232,6 +232,7 @@ struct UsageStats: Equatable {
 
     /// ⌃⌘V: pastes the last dictation again wherever the cursor is now.
     func pasteLast() {
+        guard !isCapturingNote else { return }
         if busy { cancel() }
         let text = lastTranscript.isEmpty && !isNoteSession ? result : lastTranscript
         guard !text.isEmpty else { NSSound.beep(); return }
