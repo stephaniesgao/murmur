@@ -131,7 +131,8 @@ enum WhisperModelChoice: String, CaseIterable, Identifiable, Sendable {
                     usePrefillPrompt: true,
                     detectLanguage: false,
                     skipSpecialTokens: true,
-                    withoutTimestamps: true
+                    withoutTimestamps: true,
+                    windowClipTime: 0
                 )
                 _ = try? await loaded.transcribe(audioArray: [Float](repeating: 0, count: AudioSampleUtils.sampleRate / 2), decodeOptions: warmupOptions)
                 guard !Task.isCancelled, self.choice == choice else { return }
@@ -188,6 +189,7 @@ enum WhisperModelChoice: String, CaseIterable, Identifiable, Sendable {
             detectLanguage: effectiveLanguage == nil,
             skipSpecialTokens: true,
             withoutTimestamps: true,
+            windowClipTime: samples.count <= AudioSampleUtils.sampleRate ? 0 : 1.0,
             firstTokenLogProbThreshold: nil, // Avoid spurious fallback loops on short/quiet starts
             noSpeechThreshold: nil, // short phrases like “sounds good” were being dropped as silence
             chunkingStrategy: .vad
