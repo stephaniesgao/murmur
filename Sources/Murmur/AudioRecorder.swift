@@ -130,8 +130,8 @@ final class AudioRecorder: @unchecked Sendable {
                     let floats = AudioSampleUtils.pcm16ToFloat(readyChunk)
                     if AudioSampleUtils.peakRMS(floats) > 0.001 {
                         self.lock.lock()
+                        self.pendingChunks.append(floats)
                         let stillRunning = self.running
-                        if stillRunning { self.pendingChunks.append(floats) }
                         self.lock.unlock()
                         if stillRunning { self.onChunkAvailable?() }
                     }
@@ -185,6 +185,7 @@ final class AudioRecorder: @unchecked Sendable {
         lock.lock(); let current = queue; queue = nil; running = false; lock.unlock()
         if let current {
             AudioQueueStop(current, true)
+            callbackQueue.sync {}
             disposalQueue.async { AudioQueueDispose(current, true) }
         }
         lock.lock(); defer { lock.unlock() }
