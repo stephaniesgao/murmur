@@ -111,7 +111,7 @@ struct InsertionTarget {
         let board = NSPasteboard.general
         let snapshot = try captureClipboard(from: board, strict: true)
         let before = board.changeCount
-        guard stillCurrent(), board.changeCount == before else { throw DictationError.message("The target or clipboard changed. Copy the result manually.") }
+        guard stillCurrent(), Self.validate(target), board.changeCount == before else { throw DictationError.message("The target or clipboard changed. Copy the result manually.") }
         let source = CGEventSource(stateID: .combinedSessionState)
         guard let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true), let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else { throw DictationError.message("Could not prepare paste events.") }
         board.clearContents(); guard board.setString(text, forType: .string) else { restore(snapshot, board: board); throw DictationError.message("Could not prepare the clipboard.") }
