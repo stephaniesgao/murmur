@@ -31,8 +31,3 @@ The noninteractive `--check-speech-support` command completed and reported no As
 ## 0.3.0 Whisper check (2026-11-24)
 
 On an Apple silicon Mac running macOS 15.7, the Balanced model (openai_whisper-small_216MB) downloaded through Murmur's own download path and transcribed synthesized test audio: an English sentence in 1.2 s (0.7 s on a warm second launch, which loaded the model and tokenizer from disk) and a Spanish sentence in 0.4 s with automatic language detection. A live microphone dictation through the Fn shortcut was not part of this check.
-
-## Voice notes shortcut regression checks (macOS)
-
-- Start a note, tap Fn once, and wait a second. The recording should continue; click Stop note and verify the saved note. Start another note and press Escape; the recording should stop without saving.
-- After a fresh launch, start a note and press ⌃⌘V. The recording should continue silently. Repeat after inserting a normal dictation; the recording should still continue and nothing should paste.
