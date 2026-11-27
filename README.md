@@ -31,6 +31,12 @@ Murmur swallows only its own shortcuts (the Space in Fn+Space and ⌃⌘V) so th
 
 Fn is monitored as a modifier flag through a passive event tap. Murmur does not swallow system shortcuts. If Globe opens emoji/system dictation, set System Settings → Keyboard → “Press Globe key to” → “Do Nothing”. Some keyboards do not expose this flag; use the alternative. Secure Input, sleep, or lock cancels dictation. Captures stop at 55 seconds.
 
+## Voice notes
+
+Choose **Dictate note** from the Murmur menu bar or the **Notes…** window. Speak, then click the waveform or choose **Stop note**. Murmur applies your selected cleanup mode and saves the result as a new note without typing into the active app. In the Notes window you can search note text, open a note, edit and save it, copy it, or delete it.
+
+Notes are stored on this Mac in `~/Library/Application Support/Murmur/notes.json`. They are separate from dictation history: disabling history or changing its retention does not delete notes.
+
 ## Recognition and cleanup
 
 Speech recognition is provided by Whisper running on this Mac through WhisperKit (Core ML / Neural Engine). Audio is never uploaded. Whisper adds its own punctuation and capitalization, so Verbatim mode keeps Whisper’s punctuation. Non-speech markers such as [BLANK_AUDIO] are removed.

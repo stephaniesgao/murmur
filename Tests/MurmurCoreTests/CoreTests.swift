@@ -108,6 +108,63 @@ final class LocalCleanupTests: XCTestCase {
     }
 }
 
+final class NoteTests: XCTestCase {
+    private func withArchive(_ run: (NoteArchive, URL) throws -> Void) throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try run(NoteArchive(directory: directory), directory)
+    }
+
+    func testCreateEditDeleteAndReload() throws {
+        try withArchive { archive, directory in
+            let empty = try archive.load()
+            XCTAssertEqual(empty, [])
+            let created = try archive.add("First note")
+            let first = try XCTUnwrap(created.first)
+            let added = try archive.add("Second note")
+            XCTAssertEqual(added.map(\.text), ["Second note", "First note"])
+
+            let edited = try archive.update(first.id, text: "Edited first note")
+            let reopened = NoteArchive(directory: directory)
+            let loaded = try reopened.load()
+            XCTAssertEqual(loaded, edited)
+            XCTAssertEqual(edited.last?.id, first.id)
+            XCTAssertEqual(edited.last?.text, "Edited first note")
+            let remaining = try reopened.delete(first.id)
+            XCTAssertEqual(remaining.map(\.text), ["Second note"])
+            let reloaded = try archive.load()
+            XCTAssertEqual(reloaded, remaining)
+        }
+    }
+
+    func testSearchUsesEntireNote() throws {
+        try withArchive { archive, _ in
+            let notes = try archive.add("\n   \n  Project plan \nRésumé and deadlines")
+            let note = try XCTUnwrap(notes.first)
+            XCTAssertEqual(note.title, "Project plan")
+            XCTAssertTrue(note.matches("  RESUME "))
+            XCTAssertTrue(note.matches("deadlines"))
+            XCTAssertTrue(note.matches("  "))
+            XCTAssertFalse(note.matches("budget"))
+        }
+    }
+
+    func testCorruptedNotesAreNotOverwritten() throws {
+        try withArchive { archive, directory in
+            let file = directory.appendingPathComponent("notes.json")
+            let corrupted = Data("not JSON".utf8)
+            try corrupted.write(to: file)
+            do {
+                _ = try archive.add("A new note")
+                XCTFail("Expected unreadable notes to block saves")
+            } catch {}
+            let stored = try Data(contentsOf: file)
+            XCTAssertEqual(stored, corrupted)
+        }
+    }
+}
+
 @main struct CheckRunner {
     static func main() async throws {
         print("Check: ShortcutTests.testHold"); ShortcutTests().testHold()
@@ -183,7 +240,10 @@ final class LocalCleanupTests: XCTestCase {
         print("Check: LocalCleanupTests.testBrowserDoesNotReadTabs"); LocalCleanupTests().testBrowserDoesNotReadTabs()
         print("Check: LocalCleanupTests.testCodeCategory"); LocalCleanupTests().testCodeCategory()
         print("Check: LocalCleanupTests.testAsyncLocalCleanup"); try await LocalCleanupTests().testAsyncLocalCleanup()
- print("73 checks, \(failureCount) failures")
+        print("Check: NoteTests.testCreateEditDeleteAndReload"); try NoteTests().testCreateEditDeleteAndReload()
+        print("Check: NoteTests.testSearchUsesEntireNote"); try NoteTests().testSearchUsesEntireNote()
+        print("Check: NoteTests.testCorruptedNotesAreNotOverwritten"); try NoteTests().testCorruptedNotesAreNotOverwritten()
+ print("76 checks, \(failureCount) failures")
  if failureCount > 0 { exit(1) }
  }
 }

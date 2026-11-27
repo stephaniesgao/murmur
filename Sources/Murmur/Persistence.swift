@@ -6,9 +6,13 @@ import MurmurCore
     @Published var settings: DictationSettings { didSet { saveSettings(); if !settings.keepHistory { clearHistory() } else { pruneHistory() } } }
     @Published private(set) var history: [HistoryEntry] = []
     @Published var persistenceError = ""
+    @Published private(set) var notes: [VoiceNote] = []
+    @Published private(set) var notesError = ""
     private let directory: URL
+    private let noteArchive: NoteArchive
     init() {
         directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Murmur", isDirectory: true)
+        noteArchive = NoteArchive(directory: directory)
         let config = directory.appendingPathComponent("settings.json")
         var loaded = (try? JSONDecoder().decode(DictationSettings.self, from: Data(contentsOf: config))) ?? DictationSettings()
         if loaded.mode == .polished { loaded.mode = .balanced }
@@ -18,6 +22,8 @@ import MurmurCore
         // Remove leftovers from interrupted prior recordings before any new capture starts.
         AudioRecorder.removeStaleAudio()
         if settings.keepHistory { pruneHistory() } else { clearHistory() }
+        do { notes = try noteArchive.load() }
+        catch { notesError = "Could not open local notes: \(error.localizedDescription)" }
     }
     private func write<T: Encodable>(_ value: T, name: String) {
         do { let url = directory.appendingPathComponent(name); try JSONEncoder().encode(value).write(to: url, options: .atomic); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path) }
@@ -33,4 +39,19 @@ import MurmurCore
         if settings.keepHistory && changed { write(history, name: "history.json") }
     }
     func clearHistory() { history = []; try? FileManager.default.removeItem(at: directory.appendingPathComponent("history.json")) }
+
+    func addNote(_ text: String) throws { try changeNotes { try noteArchive.add(text) } }
+    func updateNote(_ id: UUID, text: String) throws { try changeNotes { try noteArchive.update(id, text: text) } }
+    func deleteNote(_ id: UUID) throws { try changeNotes { try noteArchive.delete(id) } }
+
+    private func changeNotes(_ update: () throws -> [VoiceNote]) throws {
+        do {
+            notes = try update()
+            notesError = ""
+        } catch {
+            let message = "Could not save local notes: \(error.localizedDescription)"
+            notesError = message
+            throw DictationError.message(message)
+        }
+    }
 }

@@ -284,7 +284,10 @@ struct MenuView: View {
     @ObservedObject var controller: DictationController
     @ObservedObject var store: Store
     var openSettings: () -> Void
+    var openNotes: () -> Void
     var closeMenu: () -> Void
+
+    private var recordingDictation: Bool { !controller.isNoteSession && controller.phase == .recording }
 
     private var statusText: String {
         switch controller.phase {
@@ -292,7 +295,7 @@ struct MenuView: View {
         case .preparing: return "Waking up"
         case .recording: return "Listening"
         case .processing: return "Tidying up"
-        case .success: return "Done"
+        case .success: return controller.isNoteSession ? "Note saved" : "Done"
         case .error: return "Oops"
         }
     }
@@ -317,11 +320,16 @@ struct MenuView: View {
                 // Closing the menu before capture leaves the external app's focus untouched.
                 Task { try? await Task.sleep(nanoseconds: 180_000_000); controller.toggle() }
             } label: {
-                Label(controller.phase == .recording ? "Stop dictation" : "Start dictation", systemImage: controller.phase == .recording ? "stop.fill" : "mic.fill")
+                Label(recordingDictation ? "Stop dictation" : "Start dictation", systemImage: recordingDictation ? "stop.fill" : "mic.fill")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(PillButtonStyle())
-            .disabled(controller.phase == .processing || controller.phase == .preparing)
+            .disabled(controller.busy && !recordingDictation)
+            HStack {
+                NoteCaptureButton(controller: controller, beforeToggle: closeMenu)
+                Spacer()
+                Button("Notes…", action: openNotes).buttonStyle(PillButtonStyle(prominent: false, compact: true))
+            }
             if controller.busy {
                 Button("Cancel") { controller.cancel() }.buttonStyle(PillButtonStyle(prominent: false, compact: true))
             }
@@ -382,14 +390,14 @@ struct RecordingCapsule: View {
         .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 1))
         .shadow(color: Color.black.opacity(0.2), radius: 5, y: 2)
         .contentShape(Capsule())
-        // Clicking the pill while recording stops and inserts.
+        // Clicking the pill while recording finishes the current capture.
         .onTapGesture { if controller.phase == .recording { controller.finish() } }
-        .help(controller.phase == .recording ? "Click to stop and insert" : "")
+        .help(controller.phase == .recording ? (controller.isNoteSession ? "Click to stop and save note" : "Click to stop and insert") : "")
         .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: controller.phase)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(controller.phase == .error ? controller.message : "Dictation \(controller.phase.rawValue)")
+        .accessibilityLabel(controller.phase == .error ? controller.message : "\(controller.isNoteSession ? "Voice note" : "Dictation") \(controller.phase.rawValue)")
         .accessibilityAddTraits(controller.phase == .recording ? .isButton : [])
     }
 }

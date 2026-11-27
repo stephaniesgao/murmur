@@ -50,7 +50,10 @@ struct UsageStats: Equatable {
     @Published var handsFree = false
     @Published private(set) var stats = UsageStats.load()
     var onStatusChange: (() -> Void)?
-    private var target: InsertionTarget?
+    private enum Destination {
+        case insertion(InsertionTarget), note
+    }
+    private var destination: Destination?
     private var sessionSettings = DictationSettings()
     /// Recordings stop on their own after 10 minutes.
     private static let maximumRecording: UInt64 = 600
@@ -63,6 +66,7 @@ struct UsageStats: Equatable {
             switch action { case .start: self.start(); case .stop: self.finish(); case .cancel: self.cancel(); case .cancelScheduledStop: self.handsFree = true; default: break }
         }
         keyboard.onPasteLast = { [weak self] in self?.pasteLast() }
+        keyboard.allowsDictationGestures = { [weak self] in self?.isCapturingNote != true }
         keyboard.onAvailability = { [weak self] in self?.keyboardAvailable = $0 }
         audio.onLevel = { [weak self] value in Task { @MainActor in self?.level = value } }
         audio.onFailure = { [weak self] text in Task { @MainActor in self?.fail(text) } }
@@ -78,14 +82,24 @@ struct UsageStats: Equatable {
         workspaceTokens.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.keyboard.start() } })
     }
     var busy: Bool { [.preparing, .recording, .processing].contains(phase) }
+    var isNoteSession: Bool { if case .note = destination { return true }; return false }
+    private var isCapturingNote: Bool { isNoteSession && busy }
     var canPasteLast: Bool { !lastTranscript.isEmpty }
-    func toggle() { if phase == .recording { finish() } else if !busy { handsFree = true; start() } }
+    func toggle() { if phase == .recording && !isNoteSession { finish() } else if !busy { handsFree = true; start() } }
+    func toggleNote() { if phase == .recording && isNoteSession { finish() } else if !busy { handsFree = true; start(capturingNote: true) } }
     private func publish() { phase = gate.phase; onStatusChange?() }
 
-    func start() {
+    private func start(capturingNote: Bool = false) {
         guard let token = gate.begin() else { dictationLog.notice("Start ignored: still \(self.phase.rawValue, privacy: .public)"); return }
         dismiss?.cancel(); stopWhenReady = false; result = ""; message = ""; level = 0
-        do { target = try TextInsertion.capture() } catch { fail(error.localizedDescription); return }
+        destination = nil
+        if capturingNote {
+            destination = .note
+            keyboard.reset()
+        }
+        else {
+            do { destination = .insertion(try TextInsertion.capture()) } catch { fail(error.localizedDescription); return }
+        }
         sessionSettings = store.settings
         publish()
         work = Task { [weak self] in
@@ -114,8 +128,10 @@ struct UsageStats: Equatable {
                 }
                 guard !Task.isCancelled, self.gate.id == token else { dictationLog.notice("Start abandoned after permission check (cancelled: \(Task.isCancelled, privacy: .public))"); return }
                 guard granted else { throw DictationError.message("Microphone access is off. Enable it in System Settings → Privacy & Security → Microphone.") }
-                dictationLog.notice("Checking focus")
-                guard let target = self.target, TextInsertion.validate(target) else { throw DictationError.message("Focus changed during microphone setup. Try the shortcut again in your text field.") }
+                if case let .insertion(target) = self.destination {
+                    dictationLog.notice("Checking focus")
+                    guard TextInsertion.validate(target) else { throw DictationError.message("Focus changed during microphone setup. Try the shortcut again in your text field.") }
+                }
                 dictationLog.notice("Starting microphone")
                 try self.audio.start(device: self.sessionSettings.microphoneID)
                 dictationLog.notice("Microphone started")
@@ -136,7 +152,7 @@ struct UsageStats: Equatable {
 
     func finish() {
         if phase == .preparing { dictationLog.notice("Stop while preparing; will stop once recording starts"); stopWhenReady = true; return }
-        guard phase == .recording, let token = gate.id, let target else { dictationLog.notice("Stop ignored in phase \(self.phase.rawValue, privacy: .public)"); return }
+        guard phase == .recording, let token = gate.id, let destination else { dictationLog.notice("Stop ignored in phase \(self.phase.rawValue, privacy: .public)"); return }
         handsFree = false; limit?.cancel(); muter.restore()
         let seconds = recordingStarted.map { Date().timeIntervalSince($0) } ?? 0
         do {
@@ -154,24 +170,41 @@ struct UsageStats: Equatable {
                     dictationLog.notice("Transcribed in \(String(format: "%.2f", Date().timeIntervalSince(began)), privacy: .public)s (\(transcript.count, privacy: .public) characters)")
                     guard self.gate.id == token, !Task.isCancelled else { dictationLog.notice("Result dropped: session changed"); return }
                     self.result = transcript // Recovery text stays in memory even when history is off.
-                    // “…, press enter” sends Return after inserting, handy in chats.
-                    let (raw, pressEnter) = options.mode == .verbatim ? (transcript, false) : LocalCleanup.extractPressEnter(transcript)
-                    let context = options.contextAware ? AppContext.detect(bundle: target.bundle) : .general
-                    let style = options.style(for: StyleCategory.detect(bundle: target.bundle))
+                    let (raw, pressEnter): (String, Bool)
+                    let context: AppContext
+                    let style: WritingStyle
+                    switch destination {
+                    case .insertion(let target):
+                        (raw, pressEnter) = options.mode == .verbatim ? (transcript, false) : LocalCleanup.extractPressEnter(transcript)
+                        context = options.contextAware ? AppContext.detect(bundle: target.bundle) : .general
+                        style = options.style(for: StyleCategory.detect(bundle: target.bundle))
+                    case .note:
+                        (raw, pressEnter) = (transcript, false)
+                        context = .document
+                        style = options.otherStyle
+                    }
                     let request = CleanupRequest(transcript: raw, mode: options.mode, context: context, dictionary: options.dictionary, style: style, snippets: options.snippets)
                     let cleaned = try await LocalCleanup().clean(request, model: "local-rules")
-                    // Dictating right after existing text gets a separating space.
-                    let edited = cleaned.isEmpty ? cleaned : LocalCleanup.joining(after: TextInsertion.precedingCharacter(target), cleaned)
                     guard self.gate.id == token, !Task.isCancelled else { return }
-                    self.result = edited
-                    if !edited.isEmpty {
-                        try await self.inserter.insert(edited, target: target, allowClipboard: options.allowClipboard, stillCurrent: { self.gate.id == token })
+                    switch destination {
+                    case .insertion(let target):
+                        // Dictating right after existing text gets a separating space.
+                        let edited = cleaned.isEmpty ? cleaned : LocalCleanup.joining(after: TextInsertion.precedingCharacter(target), cleaned)
+                        self.result = edited
+                        if !edited.isEmpty {
+                            try await self.inserter.insert(edited, target: target, allowClipboard: options.allowClipboard, stillCurrent: { self.gate.id == token })
+                        }
+                        guard self.gate.id == token else { return }
+                        if pressEnter { TextInsertion.pressReturn() }
+                        self.lastTranscript = edited
+                        self.store.addHistory(edited)
+                    case .note:
+                        guard !cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw DictationError.message("No note to save. Try speaking again.") }
+                        self.result = cleaned
+                        try self.store.addNote(cleaned)
                     }
-                    guard self.gate.id == token else { return }
-                    if pressEnter { TextInsertion.pressReturn() }
-                    self.lastTranscript = edited
-                    self.record(words: edited, seconds: seconds)
-                    self.store.addHistory(edited); _ = self.gate.transition(.success, token: token); self.publish()
+                    self.record(words: self.result, seconds: seconds)
+                    _ = self.gate.transition(.success, token: token); self.publish()
                     self.dismiss = Task { [weak self] in try? await Task.sleep(nanoseconds: 250_000_000); guard !Task.isCancelled, self?.gate.id == token else { return }; self?.gate.cancel(); self?.publish() }
                 } catch { guard self.gate.id == token, !Task.isCancelled else { return }; self.fail(error.localizedDescription) }
             }
@@ -179,7 +212,7 @@ struct UsageStats: Equatable {
     }
 
     func cancel() {
-        work?.cancel(); limit?.cancel(); dismiss?.cancel(); audio.cancel(); muter.restore(); gate.cancel(); handsFree = false; stopWhenReady = false; level = 0; message = ""; result = ""; keyboard.reset(); publish()
+        work?.cancel(); limit?.cancel(); dismiss?.cancel(); audio.cancel(); muter.restore(); gate.cancel(); destination = nil; handsFree = false; stopWhenReady = false; level = 0; message = ""; result = ""; keyboard.reset(); publish()
     }
 
     func fail(_ text: String) {
@@ -199,8 +232,9 @@ struct UsageStats: Equatable {
 
     /// ⌃⌘V: pastes the last dictation again wherever the cursor is now.
     func pasteLast() {
+        guard !isCapturingNote else { return }
         if busy { cancel() }
-        let text = lastTranscript.isEmpty ? result : lastTranscript
+        let text = lastTranscript.isEmpty && !isNoteSession ? result : lastTranscript
         guard !text.isEmpty else { NSSound.beep(); return }
         Task { do { try await TextInsertion.paste(text) } catch { self.fail(error.localizedDescription) } }
     }
