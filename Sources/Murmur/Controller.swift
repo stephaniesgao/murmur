@@ -34,6 +34,7 @@ struct UsageStats: Equatable {
     let models: SpeechModelManager
     private var gate = SessionGate()
     private var work: Task<Void, Never>?
+    private var chunkTask: Task<(parts: [String], language: String?), Error>?
     private var limit: Task<Void, Never>?
     private var dismiss: Task<Void, Never>?
     private var stopWhenReady = false
@@ -69,6 +70,7 @@ struct UsageStats: Equatable {
         keyboard.allowsDictationGestures = { [weak self] in self?.isCapturingNote != true }
         keyboard.onAvailability = { [weak self] in self?.keyboardAvailable = $0 }
         audio.onLevel = { [weak self] value in Task { @MainActor in self?.level = value } }
+        audio.onChunkAvailable = { [weak self] in Task { @MainActor [weak self] in self?.drainAudioChunks() } }
         audio.onFailure = { [weak self] text in Task { @MainActor in self?.fail(text) } }
         var previousSettings = store.settings
         settingsSubscription = store.$settings.removeDuplicates().sink { [weak self] settings in
@@ -92,9 +94,33 @@ struct UsageStats: Equatable {
     func toggleNote() { if phase == .recording && isNoteSession { finish() } else if !busy { handsFree = true; start(capturingNote: true) } }
     private func publish() { phase = gate.phase; onStatusChange?() }
 
+    private func drainAudioChunks() {
+        guard phase == .recording, let token = gate.id else { return }
+        let chunks = audio.takePendingChunks()
+        guard !chunks.isEmpty else { return }
+        enqueueChunks(chunks, token: token, settings: sessionSettings)
+    }
+
+    private func enqueueChunks(_ chunks: [[Float]], token: UUID, settings: DictationSettings) {
+        for chunk in chunks {
+            let previous = chunkTask
+            chunkTask = Task { [weak self] in
+                let prior = try await previous?.value ?? (parts: [], language: nil)
+                try Task.checkCancellation()
+                guard let self, self.gate.id == token else { throw CancellationError() }
+                let trimmed = AudioSampleUtils.trimSilence(chunk)
+                guard !trimmed.isEmpty, AudioSampleUtils.peakRMS(trimmed) > 0.001 else { return prior }
+                let output = try await self.models.transcribe(samples: trimmed, settings: settings, languageHint: prior.language, allowEmpty: true)
+                var parts = prior.parts
+                if !output.text.isEmpty { parts.append(output.text) }
+                return (parts: parts, language: prior.language ?? output.detectedLanguage)
+            }
+        }
+    }
+
     private func start(capturingNote: Bool = false) {
         guard let token = gate.begin() else { dictationLog.notice("Start ignored: still \(self.phase.rawValue, privacy: .public)"); return }
-        dismiss?.cancel(); stopWhenReady = false; result = ""; message = ""; level = 0
+        dismiss?.cancel(); chunkTask?.cancel(); chunkTask = nil; stopWhenReady = false; result = ""; message = ""; level = 0
         destination = nil
         if capturingNote {
             destination = .note
@@ -131,7 +157,7 @@ struct UsageStats: Equatable {
                 }
                 guard !Task.isCancelled, self.gate.id == token else { dictationLog.notice("Start abandoned after permission check (cancelled: \(Task.isCancelled, privacy: .public))"); return }
                 guard granted else { throw DictationError.message("Microphone access is off. Enable it in System Settings → Privacy & Security → Microphone.") }
-                if case let .insertion(target) = self.destination {
+                if status == .notDetermined, case let .insertion(target) = self.destination {
                     dictationLog.notice("Checking focus")
                     guard TextInsertion.validate(target) else { throw DictationError.message("Focus changed during microphone setup. Try the shortcut again in your text field.") }
                 }
@@ -159,17 +185,34 @@ struct UsageStats: Equatable {
         handsFree = false; limit?.cancel(); muter.restore()
         let seconds = recordingStarted.map { Date().timeIntervalSince($0) } ?? 0
         do {
-            let url = try audio.finish()
-            let bytes = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
-            dictationLog.notice("Recording stopped after \(String(format: "%.1f", seconds), privacy: .public)s (\(bytes / 1024, privacy: .public) KB)")
+            let recorded = try audio.finish()
+            let kb = (recorded.totalSamples * 2) / 1024
+            dictationLog.notice("Recording stopped after \(String(format: "%.1f", seconds), privacy: .public)s (\(kb, privacy: .public) KB, streamed: \(recorded.hadStreamedChunks, privacy: .public))")
             guard gate.transition(.processing, token: token) else { dictationLog.notice("Stop ignored: session changed"); return }; publish()
             let options = sessionSettings
+            if !recorded.undrainedChunks.isEmpty {
+                enqueueChunks(recorded.undrainedChunks, token: token, settings: options)
+            }
+            let pendingChunks = chunkTask
+            chunkTask = nil
             work = Task { [weak self] in
                 guard let self else { return }
-                defer { try? FileManager.default.removeItem(at: url) }
                 do {
                     let began = Date()
-                    let transcript = try await self.models.transcribe(file: url, settings: options)
+                    let prior = try await pendingChunks?.value ?? (parts: [], language: nil)
+                    guard self.gate.id == token, !Task.isCancelled else { dictationLog.notice("Result dropped: session changed"); return }
+                    var parts = prior.parts
+                    if !recorded.samples.isEmpty, AudioSampleUtils.peakRMS(recorded.samples) > 0.001 {
+                        let tail = try await self.models.transcribe(
+                            samples: recorded.samples,
+                            settings: options,
+                            languageHint: prior.language,
+                            allowEmpty: !parts.isEmpty
+                        )
+                        if !tail.text.isEmpty { parts.append(tail.text) }
+                    }
+                    let transcript = parts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !transcript.isEmpty else { throw DictationError.message("No speech was recognized.") }
                     dictationLog.notice("Transcribed in \(String(format: "%.2f", Date().timeIntervalSince(began)), privacy: .public)s (\(transcript.count, privacy: .public) characters)")
                     guard self.gate.id == token, !Task.isCancelled else { dictationLog.notice("Result dropped: session changed"); return }
                     self.result = transcript // Recovery text stays in memory even when history is off.
@@ -195,7 +238,8 @@ struct UsageStats: Equatable {
                         let edited = cleaned.isEmpty ? cleaned : LocalCleanup.joining(after: TextInsertion.precedingCharacter(target), cleaned)
                         self.result = edited
                         if !edited.isEmpty {
-                            try await self.inserter.insert(edited, target: target, allowClipboard: options.allowClipboard, stillCurrent: { self.gate.id == token })
+                            let usedPaste = try await self.inserter.insert(edited, target: target, allowClipboard: options.allowClipboard, stillCurrent: { self.gate.id == token })
+                            if pressEnter, usedPaste { try? await Task.sleep(nanoseconds: 35_000_000) }
                         }
                         guard self.gate.id == token else { return }
                         if pressEnter { TextInsertion.pressReturn() }
@@ -215,13 +259,13 @@ struct UsageStats: Equatable {
     }
 
     func cancel() {
-        work?.cancel(); limit?.cancel(); dismiss?.cancel(); audio.cancel(); muter.restore(); gate.cancel(); destination = nil; handsFree = false; stopWhenReady = false; level = 0; message = ""; result = ""; keyboard.reset(); publish()
+        work?.cancel(); chunkTask?.cancel(); chunkTask = nil; limit?.cancel(); dismiss?.cancel(); audio.cancel(); muter.restore(); gate.cancel(); destination = nil; handsFree = false; stopWhenReady = false; level = 0; message = ""; result = ""; keyboard.reset(); publish()
     }
 
     func fail(_ text: String) {
         // Only Murmur's own status messages are logged, never transcribed text.
         dictationLog.notice("Dictation stopped: \(text, privacy: .public)")
-        work?.cancel(); limit?.cancel(); audio.cancel(); muter.restore(); handsFree = false; keyboard.reset()
+        work?.cancel(); chunkTask?.cancel(); chunkTask = nil; limit?.cancel(); audio.cancel(); muter.restore(); handsFree = false; keyboard.reset()
         if let token = gate.id { _ = gate.transition(.error, token: token) }
         message = text; publish()
         // The pill shows the reason briefly, then gets out of the way; the menu keeps the message.
@@ -239,7 +283,7 @@ struct UsageStats: Equatable {
         if busy { cancel() }
         let text = lastTranscript.isEmpty && !isNoteSession ? result : lastTranscript
         guard !text.isEmpty else { NSSound.beep(); return }
-        Task { do { try await TextInsertion.paste(text) } catch { self.fail(error.localizedDescription) } }
+        Task { do { try await self.inserter.paste(text) } catch { self.fail(error.localizedDescription) } }
     }
 
     private func record(words text: String, seconds: Double) {
