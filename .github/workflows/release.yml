@@ -72,14 +72,23 @@ jobs:
           TITLE: Murmur ${{ steps.version.outputs.short_version }} (build ${{ steps.version.outputs.build_number }})
           NOTES: ${{ steps.version.outputs.notes }}
         run: |
+          main_head="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          is_latest=false
+          if [[ "$GITHUB_SHA" == "$main_head" ]]; then
+            is_latest=true
+          fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" build/release/Murmur.zip build/release/update.json --clobber
-            gh release edit "$TAG" --latest --title "$TITLE" --notes "$NOTES"
+            if [[ "$is_latest" == "true" ]]; then
+              gh release edit "$TAG" --latest --title "$TITLE" --notes "$NOTES"
+            else
+              gh release edit "$TAG" --title "$TITLE" --notes "$NOTES"
+            fi
           else
             gh release create "$TAG" \
               build/release/Murmur.zip \
               build/release/update.json \
-              --latest \
+              --latest="$is_latest" \
               --title "$TITLE" \
               --notes "$NOTES"
           fi
