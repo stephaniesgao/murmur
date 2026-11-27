@@ -113,7 +113,8 @@ struct UsageStats: Equatable {
                 let output = try await self.models.transcribe(samples: trimmed, settings: settings, languageHint: prior.language, allowEmpty: true)
                 var parts = prior.parts
                 if !output.text.isEmpty { parts.append(output.text) }
-                return (parts: parts, language: prior.language ?? output.detectedLanguage)
+                let language = prior.language ?? (output.text.isEmpty ? nil : output.detectedLanguage)
+                return (parts: parts, language: language)
             }
         }
     }
