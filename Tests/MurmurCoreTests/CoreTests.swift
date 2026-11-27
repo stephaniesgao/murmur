@@ -222,6 +222,14 @@ final class UpdateTests: XCTestCase {
         let decoded = try JSONDecoder().decode(DictationSettings.self, from: Data(#"{"mode":"balanced"}"#.utf8))
         XCTAssertTrue(decoded.autoCheckUpdates)
     }
+
+    func testAutoCheckUpdatesDoesNotAffectCaptureBehavior() {
+        let base = DictationSettings()
+        var toggled = base; toggled.autoCheckUpdates = !base.autoCheckUpdates
+        XCTAssertFalse(toggled.differsInCaptureBehavior(from: base))
+        var modeChanged = base; modeChanged.mode = .verbatim
+        XCTAssertTrue(modeChanged.differsInCaptureBehavior(from: base))
+    }
 }
 
 @main struct CheckRunner {
@@ -307,7 +315,8 @@ final class UpdateTests: XCTestCase {
         print("Check: UpdateTests.testManifestRejectsPlainHTTPAndBadChecksum"); UpdateTests().testManifestRejectsPlainHTTPAndBadChecksum()
         print("Check: UpdateTests.testInstallHelperArgumentsKeepPathsOutOfScript"); UpdateTests().testInstallHelperArgumentsKeepPathsOutOfScript()
         print("Check: UpdateTests.testAutoCheckUpdatesDefaultsTrueForOldSettings"); try UpdateTests().testAutoCheckUpdatesDefaultsTrueForOldSettings()
- print("81 checks, \(failureCount) failures")
+        print("Check: UpdateTests.testAutoCheckUpdatesDoesNotAffectCaptureBehavior"); UpdateTests().testAutoCheckUpdatesDoesNotAffectCaptureBehavior()
+ print("82 checks, \(failureCount) failures")
  if failureCount > 0 { exit(1) }
  }
 }

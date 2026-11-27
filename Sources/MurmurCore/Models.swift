@@ -67,6 +67,13 @@ public struct DictationSettings: Codable, Equatable, Sendable {
         switch category { case .personal: return personalStyle; case .work: return workStyle; case .email: return emailStyle; case .other: return otherStyle; case nil: return .formal }
     }
 
+    /// True when any dictation/capture-relevant setting differs (ignoring unrelated app preferences like autoCheckUpdates).
+    public func differsInCaptureBehavior(from other: DictationSettings) -> Bool {
+        var lhs = self; lhs.autoCheckUpdates = false
+        var rhs = other; rhs.autoCheckUpdates = false
+        return lhs != rhs
+    }
+
     private enum CodingKeys: String, CodingKey {
         case mode, language, contextAware, audioFeedback, allowClipboard, keepHistory, retentionDays, microphoneID, shortcut, fallbackKeyCode, fallbackModifiers, dictionary
         case personalStyle, workStyle, emailStyle, otherStyle, snippets, muteWhileDictating, autoCheckUpdates

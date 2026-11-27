@@ -70,9 +70,12 @@ struct UsageStats: Equatable {
         keyboard.onAvailability = { [weak self] in self?.keyboardAvailable = $0 }
         audio.onLevel = { [weak self] value in Task { @MainActor in self?.level = value } }
         audio.onFailure = { [weak self] text in Task { @MainActor in self?.fail(text) } }
+        var previousSettings = store.settings
         settingsSubscription = store.$settings.removeDuplicates().sink { [weak self] settings in
             guard let self else { return }; self.keyboard.settings = settings
-            if self.phase == .recording || self.phase == .preparing { dictationLog.notice("Cancel: settings changed"); self.cancel() }
+            let changedCapture = settings.differsInCaptureBehavior(from: previousSettings)
+            previousSettings = settings
+            if changedCapture && (self.phase == .recording || self.phase == .preparing) { dictationLog.notice("Cancel: settings changed"); self.cancel() }
         }
         keyboard.settings = store.settings; keyboard.start()
         let center = NSWorkspace.shared.notificationCenter
