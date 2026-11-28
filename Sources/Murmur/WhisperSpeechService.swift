@@ -1,7 +1,6 @@
 import Foundation
 import os
 import WhisperKit
-import AVFoundation
 import MurmurCore
 
 private let speechLog = Logger(subsystem: "com.steph.murmur", category: "speech")
@@ -119,13 +118,27 @@ enum WhisperModelChoice: String, CaseIterable, Identifiable, Sendable {
         state = .loading
         work = Task { [weak self] in
             do {
-                // The tokenizer is fetched once alongside the model and cached in the same folder.
-                let config = WhisperKitConfig(model: choice.rawValue, downloadBase: Self.directory, modelFolder: folder.path, tokenizerFolder: Self.directory, verbose: false, prewarm: true, load: true, download: false)
+                // Skip prewarm's load-unload-load cycle (2x startup load when CoreML cache is warm)
+                // and run a 1-token warmup pass instead so the first real dictation has no cold start.
+                let config = WhisperKitConfig(model: choice.rawValue, downloadBase: Self.directory, modelFolder: folder.path, tokenizerFolder: Self.directory, verbose: false, prewarm: false, load: true, download: false)
                 let loaded = try await WhisperKit(config)
                 guard !Task.isCancelled, let self, self.choice == choice else { return }
+                let warmupOptions = DecodingOptions(
+                    language: "en",
+                    temperature: 0,
+                    temperatureFallbackCount: 0,
+                    sampleLength: 1,
+                    usePrefillPrompt: true,
+                    detectLanguage: false,
+                    skipSpecialTokens: true,
+                    withoutTimestamps: true,
+                    windowClipTime: 0
+                )
+                _ = try? await loaded.transcribe(audioArray: [Float](repeating: 0, count: AudioSampleUtils.sampleRate / 2), decodeOptions: warmupOptions)
+                guard !Task.isCancelled, self.choice == choice else { return }
                 self.kit = loaded
                 self.state = .ready
-                speechLog.notice("Loaded \(choice.rawValue, privacy: .public)")
+                speechLog.notice("Loaded and warmed \(choice.rawValue, privacy: .public)")
             } catch {
                 guard !Task.isCancelled, let self, self.choice == choice else { return }
                 speechLog.error("Model load failed: \(error.localizedDescription, privacy: .public)")
@@ -143,26 +156,41 @@ enum WhisperModelChoice: String, CaseIterable, Identifiable, Sendable {
 
     /// Waits briefly for a model that is still loading, so dictating right after launch works.
     private func readyKit() async throws -> WhisperKit {
-        for _ in 0..<150 {
+        for _ in 0..<600 {
             if let kit, state == .ready { return kit }
             guard case .loading = state else { break }
-            try await Task.sleep(nanoseconds: 200_000_000)
+            try await Task.sleep(nanoseconds: 50_000_000)
         }
         if let kit, state == .ready { return kit }
         throw DictationError.message("Murmur’s speech model isn’t ready yet. Open Settings → Setup to download it.")
     }
 
-    func transcribe(file: URL, settings: DictationSettings) async throws -> String {
+    struct TranscriptionOutput: Sendable {
+        let text: String
+        let detectedLanguage: String?
+    }
+
+    /// Transcribes 16 kHz mono float samples directly in memory (no temp WAV disk round-trip).
+    func transcribe(
+        samples: [Float],
+        settings: DictationSettings,
+        languageHint: String? = nil,
+        allowEmpty: Bool = false
+    ) async throws -> TranscriptionOutput {
         let kit = try await readyKit()
         try Task.checkCancellation()
-        let language = settings.language.isEmpty ? nil : settings.language
+        let configuredLanguage = settings.language.isEmpty ? nil : settings.language
+        let effectiveLanguage = configuredLanguage ?? languageHint
         var options = DecodingOptions(
-            language: language,
+            language: effectiveLanguage,
             temperature: 0,
+            temperatureFallbackCount: 1, // Cap retries at 1 (default 5 causes 2-6x latency spikes)
             usePrefillPrompt: true,
-            detectLanguage: language == nil,
+            detectLanguage: effectiveLanguage == nil,
             skipSpecialTokens: true,
             withoutTimestamps: true,
+            windowClipTime: samples.count <= AudioSampleUtils.sampleRate ? 0 : 1.0,
+            firstTokenLogProbThreshold: nil, // Avoid spurious fallback loops on short/quiet starts
             noSpeechThreshold: nil, // short phrases like “sounds good” were being dropped as silence
             chunkingStrategy: .vad
         )
@@ -172,13 +200,11 @@ enum WhisperModelChoice: String, CaseIterable, Identifiable, Sendable {
             let tokens = tokenizer.encode(text: " " + words.joined(separator: ", ")).filter { $0 < tokenizer.specialTokens.specialTokenBegin }
             options.promptTokens = Array(tokens.suffix(200))
         }
-        if let audio = try? AVAudioFile(forReading: file) {
-            let format = audio.fileFormat
-            speechLog.notice("Audio: \(Int(format.sampleRate), privacy: .public) Hz, \(format.channelCount, privacy: .public) ch, \(String(format: "%.1f", Double(audio.length) / format.sampleRate), privacy: .public)s")
-        }
+        let duration = Double(samples.count) / Double(AudioSampleUtils.sampleRate)
+        speechLog.notice("Audio: 16000 Hz, 1 ch, \(String(format: "%.1f", duration), privacy: .public)s (in-memory)")
         // Never spin forever: give up after 45 seconds with a clear message.
         let results = try await withThrowingTaskGroup(of: [TranscriptionResult]?.self) { group in
-            group.addTask { try await kit.transcribe(audioPath: file.path, decodeOptions: options) }
+            group.addTask { try await kit.transcribe(audioArray: samples, decodeOptions: options) }
             group.addTask { try await Task.sleep(nanoseconds: 45_000_000_000); return nil }
             guard let first = try await group.next(), let results = first else {
                 group.cancelAll()
@@ -192,8 +218,9 @@ enum WhisperModelChoice: String, CaseIterable, Identifiable, Sendable {
         var text = Self.clean(results.map(\.text).joined(separator: " "))
         // Whisper sometimes "hears" a stray word in silence; treat those as no speech.
         if ["you", "you.", "."].contains(text.lowercased()) { text = "" }
-        guard !text.isEmpty else { throw DictationError.message("No speech was recognized.") }
-        return text
+        if !allowEmpty && text.isEmpty { throw DictationError.message("No speech was recognized.") }
+        let detected = results.first?.language
+        return TranscriptionOutput(text: text, detectedLanguage: detected)
     }
 
     /// Removes Whisper's non-speech markers such as [BLANK_AUDIO] or (music).

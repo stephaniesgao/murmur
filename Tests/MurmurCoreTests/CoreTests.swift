@@ -232,6 +232,67 @@ final class UpdateTests: XCTestCase {
     }
 }
 
+final class AudioProcessingTests: XCTestCase {
+    func testPCM16ToFloat() {
+        let floats = AudioSampleUtils.pcm16ToFloat([0, 16_384, -32_768])
+        XCTAssertEqual(floats.count, 3)
+        XCTAssertEqual(floats[0], 0)
+        XCTAssertTrue(abs(floats[1] - 0.5) < 0.0001)
+        XCTAssertTrue(abs(floats[2] + 1.0) < 0.0001)
+    }
+
+    func testTrimSilenceKeepsPadding() {
+        let sr = AudioSampleUtils.sampleRate
+        var samples = [Float](repeating: 0, count: sr * 5) // 5 seconds
+        // Active speech from 2.0s to 3.0s
+        for i in (sr * 2)..<(sr * 3) { samples[i] = 0.2 }
+        let trimmed = AudioSampleUtils.trimSilence(samples)
+        // Expected: ~1.5s (1s speech + 0.25s padding before and after)
+        XCTAssertTrue(trimmed.count >= Int(Double(sr) * 1.45) && trimmed.count <= Int(Double(sr) * 1.55))
+        XCTAssertTrue(AudioSampleUtils.peakRMS(trimmed) > 0.15)
+    }
+
+    func testTrimSilenceKeepsAllQuietAudio() {
+        let samples = [Float](repeating: 0.001, count: AudioSampleUtils.sampleRate)
+        let trimmed = AudioSampleUtils.trimSilence(samples)
+        XCTAssertEqual(trimmed.count, samples.count)
+    }
+
+    func testChunkPlannerIgnoresShortRecordings() {
+        let planner = AudioChunkPlanner(minChunkSeconds: 10, maxChunkSeconds: 25, silenceSeconds: 0.45)
+        let sr = AudioSampleUtils.sampleRate
+        // 8s of speech + 1s silence = 9s (< 10s min)
+        let samples = [Int16](repeating: 6_000, count: sr * 8) + [Int16](repeating: 0, count: sr)
+        XCTAssertNil(planner.splitLength(for: samples[...]))
+    }
+
+    func testChunkPlannerSplitsOnPause() {
+        let planner = AudioChunkPlanner(minChunkSeconds: 10, maxChunkSeconds: 25, silenceSeconds: 0.45)
+        let sr = AudioSampleUtils.sampleRate
+        // 10s of speech + 0.6s of silence
+        let samples = [Int16](repeating: 6_000, count: sr * 10) + [Int16](repeating: 0, count: Int(Double(sr) * 0.6))
+        let split = planner.splitLength(for: samples[...])
+        XCTAssertNotNil(split)
+        if let split {
+            XCTAssertTrue(split >= sr * 10 && split < samples.count)
+        }
+    }
+
+    func testChunkPlannerSplitsContinuousSpeechAtMaxLength() {
+        let planner = AudioChunkPlanner(minChunkSeconds: 10, maxChunkSeconds: 25, silenceSeconds: 0.45)
+        let sr = AudioSampleUtils.sampleRate
+        // 26s of continuous speech with a quieter dip around 23.5s
+        var samples = [Int16](repeating: 8_000, count: sr * 26)
+        let dipStart = Int(Double(sr) * 23.5)
+        for i in dipStart..<(dipStart + 640) { samples[i] = 1_000 }
+        let split = planner.splitLength(for: samples[...])
+        XCTAssertNotNil(split)
+        if let split {
+            XCTAssertTrue(split >= dipStart && split <= dipStart + 640)
+        }
+    }
+}
+
 @main struct CheckRunner {
     static func main() async throws {
         print("Check: ShortcutTests.testHold"); ShortcutTests().testHold()
@@ -316,7 +377,13 @@ final class UpdateTests: XCTestCase {
         print("Check: UpdateTests.testInstallHelperArgumentsKeepPathsOutOfScript"); UpdateTests().testInstallHelperArgumentsKeepPathsOutOfScript()
         print("Check: UpdateTests.testAutoCheckUpdatesDefaultsTrueForOldSettings"); try UpdateTests().testAutoCheckUpdatesDefaultsTrueForOldSettings()
         print("Check: UpdateTests.testAutoCheckUpdatesDoesNotAffectCaptureBehavior"); UpdateTests().testAutoCheckUpdatesDoesNotAffectCaptureBehavior()
- print("82 checks, \(failureCount) failures")
+        print("Check: AudioProcessingTests.testPCM16ToFloat"); AudioProcessingTests().testPCM16ToFloat()
+        print("Check: AudioProcessingTests.testTrimSilenceKeepsPadding"); AudioProcessingTests().testTrimSilenceKeepsPadding()
+        print("Check: AudioProcessingTests.testTrimSilenceKeepsAllQuietAudio"); AudioProcessingTests().testTrimSilenceKeepsAllQuietAudio()
+        print("Check: AudioProcessingTests.testChunkPlannerIgnoresShortRecordings"); AudioProcessingTests().testChunkPlannerIgnoresShortRecordings()
+        print("Check: AudioProcessingTests.testChunkPlannerSplitsOnPause"); AudioProcessingTests().testChunkPlannerSplitsOnPause()
+        print("Check: AudioProcessingTests.testChunkPlannerSplitsContinuousSpeechAtMaxLength"); AudioProcessingTests().testChunkPlannerSplitsContinuousSpeechAtMaxLength()
+ print("88 checks, \(failureCount) failures")
  if failureCount > 0 { exit(1) }
  }
 }
