@@ -1,0 +1,94 @@
+name: Release Murmur
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run core checks
+        run: ./scripts/test.sh
+
+      - name: Compute release version
+        id: version
+        run: |
+          short_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)"
+          plist_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Info.plist)"
+          commit_count="$(git rev-list --count HEAD)"
+          if (( commit_count > plist_build )); then
+            build_number="$commit_count"
+          else
+            build_number="$plist_build"
+          fi
+          commit_sha="$(git rev-parse --short HEAD)"
+          tag="v${short_version}-b${build_number}"
+          subject="$(git log -1 --pretty=%s)"
+          echo "short_version=$short_version" >> "$GITHUB_OUTPUT"
+          echo "build_number=$build_number" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$commit_sha" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          {
+            echo "notes<<EOF"
+            echo "$subject"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build Murmur.app
+        env:
+          MURMUR_BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
+          MURMUR_COMMIT_SHA: ${{ steps.version.outputs.commit_sha }}
+          MURMUR_SIGN_IDENTITY: ${{ secrets.MURMUR_SIGN_IDENTITY }}
+        run: ./scripts/build-app.sh release
+
+      - name: Package release archive and update manifest
+        env:
+          MURMUR_RELEASE_NOTES: ${{ steps.version.outputs.notes }}
+        run: |
+          ./scripts/package-release.sh \
+            build/Murmur.app \
+            build/release \
+            "https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/Murmur.zip"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          TITLE: Murmur ${{ steps.version.outputs.short_version }} (build ${{ steps.version.outputs.build_number }})
+          NOTES: ${{ steps.version.outputs.notes }}
+        run: |
+          main_head="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          is_latest=false
+          if [[ "$GITHUB_SHA" == "$main_head" ]]; then
+            is_latest=true
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" build/release/Murmur.zip build/release/update.json --clobber
+            if [[ "$is_latest" == "true" ]]; then
+              gh release edit "$TAG" --latest --title "$TITLE" --notes "$NOTES"
+            else
+              gh release edit "$TAG" --title "$TITLE" --notes "$NOTES"
+            fi
+          else
+            gh release create "$TAG" \
+              build/release/Murmur.zip \
+              build/release/update.json \
+              --latest="$is_latest" \
+              --title "$TITLE" \
+              --notes "$NOTES"
+          fi

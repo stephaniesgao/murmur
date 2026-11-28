@@ -13,6 +13,18 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp ".build/$configuration/Murmur" "$app/Contents/MacOS/Murmur"
 cp Info.plist "$app/Contents/Info.plist"
 cp Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
+plist="$app/Contents/Info.plist"
+if [[ -n "${MURMUR_SHORT_VERSION:-}" ]]; then
+  /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $MURMUR_SHORT_VERSION" "$plist"
+fi
+if [[ -n "${MURMUR_BUILD_NUMBER:-}" ]]; then
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $MURMUR_BUILD_NUMBER" "$plist"
+fi
+commit_sha="${MURMUR_COMMIT_SHA:-$(git rev-parse --short HEAD 2>/dev/null || true)}"
+if [[ -n "$commit_sha" ]]; then
+  /usr/libexec/PlistBuddy -c "Delete :MurmurCommitSHA" "$plist" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c "Add :MurmurCommitSHA string $commit_sha" "$plist"
+fi
 if [[ -n "${MURMUR_SIGN_IDENTITY:-}" ]]; then
   codesign --force --options runtime --timestamp --entitlements Entitlements.plist --sign "$MURMUR_SIGN_IDENTITY" "$app"
 else

@@ -60,15 +60,23 @@ public struct DictationSettings: Codable, Equatable, Sendable {
     public var otherStyle: WritingStyle = .formal
     public var snippets: [Snippet] = []
     public var muteWhileDictating = false
+    public var autoCheckUpdates = true
     public init() {}
 
     public func style(for category: StyleCategory?) -> WritingStyle {
         switch category { case .personal: return personalStyle; case .work: return workStyle; case .email: return emailStyle; case .other: return otherStyle; case nil: return .formal }
     }
 
+    /// True when any dictation/capture-relevant setting differs (ignoring unrelated app preferences like autoCheckUpdates).
+    public func differsInCaptureBehavior(from other: DictationSettings) -> Bool {
+        var lhs = self; lhs.autoCheckUpdates = false
+        var rhs = other; rhs.autoCheckUpdates = false
+        return lhs != rhs
+    }
+
     private enum CodingKeys: String, CodingKey {
         case mode, language, contextAware, audioFeedback, allowClipboard, keepHistory, retentionDays, microphoneID, shortcut, fallbackKeyCode, fallbackModifiers, dictionary
-        case personalStyle, workStyle, emailStyle, otherStyle, snippets, muteWhileDictating
+        case personalStyle, workStyle, emailStyle, otherStyle, snippets, muteWhileDictating, autoCheckUpdates
     }
     /// Every field is optional when reading, so settings saved by older versions keep working.
     public init(from decoder: Decoder) throws {
@@ -92,6 +100,7 @@ public struct DictationSettings: Codable, Equatable, Sendable {
         otherStyle = (try? c.decodeIfPresent(WritingStyle.self, forKey: .otherStyle)) ?? d.otherStyle
         snippets = (try? c.decodeIfPresent([Snippet].self, forKey: .snippets)) ?? d.snippets
         muteWhileDictating = (try? c.decodeIfPresent(Bool.self, forKey: .muteWhileDictating)) ?? d.muteWhileDictating
+        autoCheckUpdates = (try? c.decodeIfPresent(Bool.self, forKey: .autoCheckUpdates)) ?? d.autoCheckUpdates
     }
 }
 public struct CleanupRequest: Sendable {

@@ -76,7 +76,7 @@ Direct insertion uses the selected-text Accessibility attribute at a zero-length
 
 ## Privacy
 
-This build contains no OpenAI API client or API-key access. It makes no transcription or cleanup network requests. The only network access is the one-time model and tokenizer download from Hugging Face, started by you in Setup.
+This build contains no OpenAI API client or API-key access. It makes no transcription or cleanup network requests. Network access is limited to the one-time speech model download from Hugging Face (started by you in Setup) and checking GitHub Releases for new app versions (which can be disabled in Setup → Updates).
 
 Audio is recorded only after explicit activation and permission checks, into user-only temporary WAV files. Files are deleted after processing, cancellation or failure; crash leftovers are removed on next launch. The last text result stays in memory for recovery until a new session, cancellation or quit.
 

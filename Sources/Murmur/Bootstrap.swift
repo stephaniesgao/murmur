@@ -10,6 +10,8 @@ private let launchLog = Logger(subsystem: "com.steph.murmur", category: "launch"
     private var statusItem: NSStatusItem!
     private var controller: DictationController!
     private var store: Store!
+    private var updater: UpdateManager!
+    private var updateSettingSubscription: AnyCancellable?
     private var overlay: Overlay!
     private var settingsWindow: NSWindow?
     private var notesWindow: NSWindow?
@@ -31,17 +33,29 @@ private let launchLog = Logger(subsystem: "com.steph.murmur", category: "launch"
         // for inactive apps, so this observer must ask for immediate delivery.
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(handleReopenNotification(_:)), name: Self.reopenNotification, object: nil, suspensionBehavior: .deliverImmediately)
         store = Store(); let models = SpeechModelManager(); controller = DictationController(store: store, models: models); models.prepare(); overlay = Overlay(controller: controller)
+        updater = UpdateManager()
+        updater.setAutoCheck(store.settings.autoCheckUpdates)
+        updateSettingSubscription = store.$settings.map(\.autoCheckUpdates).removeDuplicates().sink { [weak self] enabled in
+            self?.updater.setAutoCheck(enabled)
+        }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Murmur dictation")
         statusItem.button?.toolTip = "Murmur · voice dictation"
         let menu = NSMenu(); let item = NSMenuItem()
-        item.view = NSHostingView(rootView: MenuView(
-            controller: controller, store: store,
+        let menuHost = NSHostingView(rootView: MenuView(
+            controller: controller, store: store, updater: updater,
             openSettings: { [weak self] in menu.cancelTracking(); self?.showSettings() },
             openNotes: { [weak self] in menu.cancelTracking(); self?.showNotes() },
             closeMenu: { menu.cancelTracking() }
         ))
-        item.view?.frame = NSRect(x: 0, y: 0, width: 310, height: 470); menu.addItem(item); statusItem.menu = menu
+        menuHost.frame = NSRect(x: 0, y: 0, width: 310, height: 470)
+        item.view = menuHost; menu.addItem(item); statusItem.menu = menu
+        updater.onAvailabilityChange = { [weak self] in
+            guard let self else { return }
+            let hasUpdate = self.updater.state.availableUpdate != nil
+            self.statusItem.button?.toolTip = hasUpdate ? "Murmur · update available" : "Murmur · voice dictation"
+            menuHost.frame = NSRect(x: 0, y: 0, width: 310, height: hasUpdate ? 530 : 470)
+        }
         controller.onStatusChange = { [weak self] in
             guard let self else { return }; self.overlay.update(phase: self.controller.phase)
             self.statusItem.button?.image = NSImage(systemSymbolName: self.controller.phase == .recording ? "mic.fill" : "waveform", accessibilityDescription: "Murmur \(self.controller.phase.rawValue)")
@@ -63,7 +77,7 @@ private let launchLog = Logger(subsystem: "com.steph.murmur", category: "launch"
             // Open on the Space the user is looking at, not the one it was last on, including
             // over a full-screen app; otherwise it stays hidden on the desktop Space.
             window.collectionBehavior.formUnion([.moveToActiveSpace, .fullScreenAuxiliary])
-            window.contentView = NSHostingView(rootView: SettingsView(controller: controller, store: store)); window.center(); settingsWindow = window
+            window.contentView = NSHostingView(rootView: SettingsView(controller: controller, store: store, updater: updater)); window.center(); settingsWindow = window
         }
         guard let window = settingsWindow else { return }
         present(window)
